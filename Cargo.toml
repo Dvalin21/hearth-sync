@@ -47,7 +47,7 @@ jpeg-decoder = "0.3"
 sha2 = "0.10"
 hex = "0.4"
 encoding_rs = "=0.8.33"
-time = "=0.3.36"
+time = "0.3"
 uuid = { version = "=1.10.0", features = ["v4", "serde"] }
 
 # Config / errors / logging
@@ -61,7 +61,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 chrono = { version = "0.4", features = ["serde"] }
 mime = "0.3"
 mime_guess = "2"
-multipart = "0.18"
 
 # Optional
 rustls = { version = "0.23", optional = true }

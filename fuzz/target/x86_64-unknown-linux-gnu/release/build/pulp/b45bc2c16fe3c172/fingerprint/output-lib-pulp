@@ -1,0 +1,1 @@
+{"$message_type":"unused_extern","lint_level":"force-warn","unused_extern_names":["cfg_if","libm","pulp_wasm_simd_flag","raw_cpuid","reborrow"]}
