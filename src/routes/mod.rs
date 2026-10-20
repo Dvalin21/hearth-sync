@@ -69,6 +69,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/memories/:id/hide", put(memories::hide))
         // ml
         .route("/api/ml/status", get(ml::status))
+        .route("/api/ml/models", get(ml::models))
         .route("/api/ml/smart-search", post(ml::smart_search))
         .route("/api/ml/people", get(ml::people))
         .route("/api/ml/reprocess", post(ml::reprocess))

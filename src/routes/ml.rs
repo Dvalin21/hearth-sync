@@ -26,6 +26,21 @@ pub struct MlStatus {
     pub python_available: bool,
 }
 
+pub async fn models(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<serde_json::Value>> {
+    let _ = auth_user(&state, &headers)?;
+    let model_dir = state.config.data_dir.join("models");
+    let clip = model_dir.join("clip_visual.onnx").exists();
+    let face = model_dir.join("face_detection.onnx").exists();
+    let python = crate::ml::InferenceEngine::new(model_dir.clone()).is_available();
+    Ok(Json(serde_json::json!({
+        "model_dir": model_dir.to_string_lossy(),
+        "clip_visual": clip,
+        "face_detection": face,
+        "python_available": python,
+        "ort_compiled": cfg!(feature = "ml"),
+    })))
+}
+
 pub async fn status(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<MlStatus>> {
     let _ = auth_user(&state, &headers)?;
     let engine = crate::ml::InferenceEngine::new(state.config.data_dir.join("models"));

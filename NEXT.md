@@ -367,3 +367,7 @@ Verified smoke: register → upload → list → sync changes → search → col
 endpoints → album create, all returning correct shapes.
 
 Binary: target/release/hearth-sync (~? MB). Release build: `cargo build --release`.
+
+Remaining for production: formal security audit with fuzzing, and tagged release.
+ort inference wired (feature-gated behind `ml`). Model management endpoint added.
+Python/torch helper retained as fallback for systems without ort-compiled binary.

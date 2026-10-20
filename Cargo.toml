@@ -10,7 +10,7 @@ repository = "https://github.com/openlight/hearth-sync"
 [features]
 default = []
 # Enable in-process ML (face detection, CLIP, OCR) via ONNX Runtime.
-ml = []
+ml = ["dep:ort"]
 # Enable direct TLS (otherwise terminate TLS at a reverse proxy).
 tls = ["dep:rustls", "dep:tokio-rustls"]
 
@@ -65,6 +65,7 @@ multipart = "0.18"
 
 # Optional
 rustls = { version = "0.23", optional = true }
+ort = { version = "2.0.0-rc.15", optional = true }
 tokio-rustls = { version = "0.26", optional = true }
 
 [dev-dependencies]
