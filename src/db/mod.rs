@@ -25,6 +25,9 @@ pub fn init_pool(db_path: &Path) -> Result<DbPool, rusqlite::Error> {
 fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
     conn.execute_batch(include_str!("schema.sql"))?;
+    // Idempotent column additions for existing DBs
+    let _ = conn.execute("ALTER TABLE albums ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE photos ADD COLUMN person_ids TEXT NOT NULL DEFAULT ''", []);
     Ok(())
 }
 

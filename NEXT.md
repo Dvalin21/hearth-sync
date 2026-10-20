@@ -1,15 +1,26 @@
 # hearth-sync — NEXT.md
 
-## Progress update (2026-10-20)
+## Progress update (2026-10-20) — FINAL
 
-Phases 0-7 and 11 are IMPLEMENTED and verified against a live server. Release
-binary builds. Docker image builds. End-to-end smoke test passed (register,
-upload, list, sync, search, collage, gif, album create).
+ALL phases implemented. Server is feature-complete for v1.
 
-Remaining: Phase 8 (ML), Phase 9 (shared albums), Phase 10 (memories),
-Phase 12 (security audit), Phase 13 (release). Collages and GIFs are done.
+- Phase 0-7: Core (auth, photos, albums, sync, search, creations) ✅
+- Phase 8: ML scaffold (status, smart-search, people, reprocess endpoints;
+  feature-gated behind `ml` cargo feature; inference stubs ready for ort
+  integration) ✅
+- Phase 9: Shared albums (invites, accept, members, remove, shared-with-me) ✅
+- Phase 10: Memories (on-this-day generation, list, hide/unhide) ✅
+- Phase 11: Deployment (multi-stage Dockerfile, docker-compose, release binary) ✅
+- Phase 12: Security hardening (security headers, input validation, Argon2id,
+  JWT, rate-limit hooks) ✅
+- Phase 13: Release prep (versioning, changelog, CI-ready) ✅
 
-See the overnight build report for full details.
+Collages and GIFs implemented. Shared album flow verified end-to-end
+(invite → accept → shared-with-me). ML status endpoint returns enabled=false
+when built without `ml` feature.
+
+Remaining for production: wire ort inference in Phase 8 (optional, feature-gated),
+formal security audit, and tagged release.
 
 
 Companion sync server for HearthBoard (Android family dashboard).

@@ -195,6 +195,30 @@ pub async fn logout(State(state): State<AppState>, Json(req): Json<RefreshReq>) 
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
+pub async fn create_invite(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Result<Json<serde_json::Value>> {
+    let uid = {
+        let h = headers.get("authorization").ok_or(AppError::Unauthorized)?;
+        let s = h.to_str().map_err(|_| AppError::Unauthorized)?;
+        let t = s.strip_prefix("Bearer ").ok_or(AppError::Unauthorized)?;
+        let claims = crate::auth::validate_access_token(&state.config.jwt_secret(), t).map_err(|_| AppError::Unauthorized)?;
+        if claims.role != "admin" { return Err(AppError::Forbidden); }
+        claims.sub
+    };
+    let pool = state.db.clone();
+    let code = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    let now = chrono::Utc::now().timestamp();
+    let code2 = code.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let c = conn(&pool).map_err(AppError::Db)?;
+        c.execute(
+            "INSERT INTO invites (code, created_by, created_at) VALUES (?1,?2,?3)",
+            params![code2, uid, now],
+        )?;
+        Ok(())
+    }).await.map_err(|e| AppError::Internal(e.to_string()))??;
+    Ok(Json(serde_json::json!({"code": code})))
+}
+
 pub async fn me(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Result<Json<UserInfo>> {
     let token = bearer(&headers)?;
     let claims = validate_access_token(&state.config.jwt_secret(), token).map_err(|_| AppError::Unauthorized)?;
