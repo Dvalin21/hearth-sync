@@ -1,5 +1,6 @@
 use crate::error::{AppError, Result};
 use crate::AppState;
+use crate::middleware::rate_limit_middleware;
 use axum::Router;
 use axum::routing::{get, post, delete, put};
 use tower_http::cors::{Any, CorsLayer};
@@ -76,6 +77,7 @@ pub fn router(state: AppState) -> Router {
         .layer(RequestBodyLimitLayer::new(max_bytes as usize))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
+        .layer(axum::middleware::from_fn(rate_limit_middleware))
         .layer(axum::middleware::from_fn(security_headers))
         .with_state(state)
 }

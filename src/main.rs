@@ -1,5 +1,5 @@
 use clap::Parser;
-use hearth_sync::{build_router, config::Config, db, storage::ObjectStore, AppState};
+use hearth_sync::{build_router, config::Config, db, middleware::RateLimiter, storage::ObjectStore, AppState};
 use std::net::SocketAddr;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -20,6 +20,7 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         db,
         store,
+        rate_limiter: std::sync::Arc::new(RateLimiter::new(100, 60)),
     };
 
     let app = build_router(state);
