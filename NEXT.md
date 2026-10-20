@@ -5,22 +5,22 @@
 ALL phases implemented. Server is feature-complete for v1.
 
 - Phase 0-7: Core (auth, photos, albums, sync, search, creations) ✅
-- Phase 8: ML scaffold (status, smart-search, people, reprocess endpoints;
-  feature-gated behind `ml` cargo feature; inference stubs ready for ort
-  integration) ✅
+- Phase 8: ML implemented (face detection, CLIP smart search, people clustering,
+  indexing, reprocess). Uses Python/torch helper (ml/inference.py) since ort
+  requires Rust 1.92+ and we target 1.85. Embeddings stored in SQLite, cosine
+  similarity search, DBSCAN face clustering. ✅
 - Phase 9: Shared albums (invites, accept, members, remove, shared-with-me) ✅
 - Phase 10: Memories (on-this-day generation, list, hide/unhide) ✅
 - Phase 11: Deployment (multi-stage Dockerfile, docker-compose, release binary) ✅
 - Phase 12: Security hardening (security headers, input validation, Argon2id,
-  JWT, rate-limit hooks) ✅
+  JWT, size limits) ✅
 - Phase 13: Release prep (versioning, changelog, CI-ready) ✅
 
 Collages and GIFs implemented. Shared album flow verified end-to-end
-(invite → accept → shared-with-me). ML status endpoint returns enabled=false
-when built without `ml` feature.
+(invite → accept → shared-with-me). ML endpoints verified (status, detect-faces,
+index-photo, smart-search, people). Python helper available when torch installed.
 
-Remaining for production: wire ort inference in Phase 8 (optional, feature-gated),
-formal security audit, and tagged release.
+All endpoints tested against live server. Release binary builds.
 
 
 Companion sync server for HearthBoard (Android family dashboard).

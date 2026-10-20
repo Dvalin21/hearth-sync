@@ -4,6 +4,7 @@ pub mod db;
 pub mod error;
 pub mod routes;
 pub mod storage;
+pub mod ml;
 
 use crate::config::Config;
 use crate::db::DbPool;

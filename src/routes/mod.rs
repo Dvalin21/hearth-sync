@@ -71,6 +71,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/ml/smart-search", post(ml::smart_search))
         .route("/api/ml/people", get(ml::people))
         .route("/api/ml/reprocess", post(ml::reprocess))
+        .route("/api/ml/detect-faces", post(ml::detect_faces))
+        .route("/api/ml/index-photo", post(ml::index_photo))
         .layer(RequestBodyLimitLayer::new(max_bytes as usize))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
