@@ -1,6 +1,7 @@
 use crate::error::{AppError, Result};
 use crate::AppState;
 use crate::middleware::rate_limit_middleware;
+use axum::extract::DefaultBodyLimit;
 use axum::Router;
 use axum::routing::{get, post, delete, put};
 use tower_http::cors::{Any, CorsLayer};
@@ -76,6 +77,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/ml/detect-faces", post(ml::detect_faces))
         .route("/api/ml/index-photo", post(ml::index_photo))
         .layer(RequestBodyLimitLayer::new(max_bytes as usize))
+        .layer(DefaultBodyLimit::max(max_bytes as usize))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .layer(axum::middleware::from_fn(rate_limit_middleware))
