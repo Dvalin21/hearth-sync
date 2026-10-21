@@ -94,15 +94,28 @@ pub async fn list(State(state): State<AppState>, headers: axum::http::HeaderMap,
 
 pub async fn upload(State(state): State<AppState>, headers: axum::http::HeaderMap, mut multipart: Multipart) -> Result<Json<Photo>> {
     let uid = auth_user(&state, &headers)?;
-    // read file field
+    // read file field + optional metadata fields (PhotoSyncWorker sends them)
     let mut file_bytes: Option<Vec<u8>> = None;
     let mut file_name = String::from("photo.jpg");
     let mut mime = String::from("image/jpeg");
+    let mut taken_at_opt: Option<i64> = None;
+    let mut lat_opt: Option<f64> = None;
+    let mut lon_opt: Option<f64> = None;
+    let mut camera_make = String::new();
+    let mut camera_model = String::new();
     while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
-        if field.name() == Some("file") {
-            file_name = field.file_name().unwrap_or("photo.jpg").to_string();
-            mime = field.content_type().unwrap_or("image/jpeg").to_string();
-            file_bytes = Some(field.bytes().await.map_err(|e| AppError::BadRequest(e.to_string()))?.to_vec());
+        match field.name().unwrap_or("") {
+            "file" => {
+                file_name = field.file_name().unwrap_or("photo.jpg").to_string();
+                mime = field.content_type().unwrap_or("image/jpeg").to_string();
+                file_bytes = Some(field.bytes().await.map_err(|e| AppError::BadRequest(e.to_string()))?.to_vec());
+            }
+            "taken_at" => taken_at_opt = field.text().await.ok().and_then(|s| s.parse().ok()),
+            "location_lat" => lat_opt = field.text().await.ok().and_then(|s| s.parse().ok()),
+            "location_lon" => lon_opt = field.text().await.ok().and_then(|s| s.parse().ok()),
+            "camera_make" => camera_make = field.text().await.unwrap_or_default(),
+            "camera_model" => camera_model = field.text().await.unwrap_or_default(),
+            _ => {} // unknown fields ignored — clients may send extras
         }
     }
     let data = file_bytes.ok_or_else(|| AppError::BadRequest("file field required".into()))?;
@@ -121,8 +134,8 @@ pub async fn upload(State(state): State<AppState>, headers: axum::http::HeaderMa
         }
     }).await.unwrap_or((0, 0));
 
-    // EXIF taken_at (best effort)
-    let taken_at = extract_taken_at(&data);
+    // EXIF taken_at (best effort) — multipart value wins
+    let taken_at = taken_at_opt.or_else(|| extract_taken_at(&data));
 
     let pool = state.db.clone();
     let uid2 = uid.clone();
@@ -140,13 +153,17 @@ pub async fn upload(State(state): State<AppState>, headers: axum::http::HeaderMa
             |r| r.get(0),
         ).ok();
         if let Some(eid) = existing {
-            // return existing
+            // backfill metadata the client sent, then return existing row
+            c.execute(
+                "UPDATE photos SET taken_at=COALESCE(?1,taken_at), location_lat=COALESCE(?2,location_lat), location_lon=COALESCE(?3,location_lon), camera_make=CASE WHEN ?4='' THEN camera_make ELSE ?4 END, camera_model=CASE WHEN ?5='' THEN camera_model ELSE ?5 END WHERE id=?6",
+                params![taken_at, lat_opt, lon_opt, camera_make, camera_model, eid],
+            )?;
             let p = load_photo(&c, &eid)?;
             return Ok(p);
         }
         c.execute(
-            "INSERT INTO photos (id,user_id,content_hash,width,height,taken_at,imported_at,size_bytes,mime_type,is_favorite,is_archived,is_trashed,caption,camera_make,camera_model,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,0,0,0,'','','',?10)",
-            params![id, uid2, hash_for_db, w, h, taken_at, now, data_for_db.len() as i64, mime2, now],
+            "INSERT INTO photos (id,user_id,content_hash,width,height,taken_at,imported_at,size_bytes,mime_type,is_favorite,is_archived,is_trashed,caption,location_lat,location_lon,camera_make,camera_model,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,0,0,0,'',?10,?11,?12,?13,?14)",
+            params![id, uid2, hash_for_db, w, h, taken_at, now, data_for_db.len() as i64, mime2, lat_opt, lon_opt, camera_make, camera_model, now],
         )?;
         // FTS
         c.execute("INSERT INTO photos_fts (photo_id, caption, camera_make, camera_model) VALUES (?1,'','','')", params![id])?;
