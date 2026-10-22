@@ -18,8 +18,3 @@ echo "  - Face detection: InsightFace buffalo_l (RetinaFace)"
 echo ""
 echo "For face detection without ONNX models, use the Python helper (ml/inference.py)"
 echo "which provides pseudo-detections for testing."
-EOF
-chmod +x /home/keith/host/hearth-sync/scripts/download-models.sh
-mkdir -p /home/keith/host/hearth-sync/scripts
-mv /home/keith/host/hearth-sync/scripts/download-models.sh /home/keith/host/hearth-sync/scripts/download-models.sh 2>/dev/null
-echo done

@@ -1,39 +1,66 @@
 # hearth-sync
 
-Optional self-hosted sync server for [HearthBoard](https://github.com/openlight/HearthBoard) (Android family dashboard).
+Optional self-hosted sync server for [HearthBoard](https://github.com/Dvalin21/Hearthboard) —
+an Android family dashboard with photos, checklists, meals, tasks, rewards and more.
+Get the app from [HearthBoard releases](https://github.com/Dvalin21/Hearthboard/releases).
 
-Enables cross-device photo sync, shared albums, smart search (CLIP), face grouping,
-memories, and Google-Photos-style creations (collages, GIFs).
+Enables cross-device photo sync, shared albums, search, memories, and
+Google-Photos-style creations (collages, GIFs).
 
 ## Quick start
 
-```bash
-# 1. Set a JWT secret
-export HEARTH_SYNC_JWT_SECRET=$(openssl rand -hex 32)
+Docker (image published on Docker Hub):
 
-# 2. Run
+```bash
+docker run -d --name hearth-sync \
+  -p 8080:8080 \
+  -v hearth-sync-data:/data \
+  -e HEARTH_SYNC_JWT_SECRET="$(openssl rand -hex 32)" \
+  dvalin21/hearth-sync:latest
+```
+
+From source:
+
+```bash
+export HEARTH_SYNC_JWT_SECRET="$(openssl rand -hex 32)"
 cargo run --release
-# or
-docker compose up -d
 ```
 
 Server listens on `:8080`. Point HearthBoard's sync settings at `http://<host>:8080`
 (LAN) or `https://photos.yourdomain.com` (behind a reverse proxy).
 
+## Configuration
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `HEARTH_SYNC_LISTEN` | `0.0.0.0:8080` | Listen address |
+| `HEARTH_SYNC_DATA_DIR` | `./data` | SQLite database + photo blobs + thumbnails |
+| `HEARTH_SYNC_JWT_SECRET` | *(required)* | Secret for access-token signing |
+| `HEARTH_SYNC_DB` | `hearth.db` | Database file name |
+| `HEARTH_SYNC_MAX_UPLOAD_MB` | `100` | Upload size cap |
+| `HEARTH_SYNC_LOG` | `info` | Log level |
+| `HEARTH_SYNC_CORS_ORIGINS` | `*` | CORS allowlist |
+
 ## ML features (optional)
 
-Smart search and face detection require Python 3 with torch, pillow, numpy:
+Smart search (CLIP) and face detection ship enabled in the Docker image
+(not enabled in plain `cargo build`; build with `--features ml`).
+To activate:
 
 ```bash
-pip install torch pillow numpy
+bash scripts/download-models.sh            # prints recommended model sources
 ```
 
-The server calls `ml/inference.py` as a helper. Place it next to the binary or
-set `HEARTH_SYNC_MODEL_DIR`. ML endpoints return a clear error when unavailable.
+Place `clip_visual.onnx` and `face_detection.onnx` in the model dir
+(`HEARTH_SYNC_MODEL_DIR`, default `./data/models`; `/data/models` in Docker), or run with the
+Python helper (`ml/inference.py`, needs `torch pillow numpy`). The ML endpoints
+report availability — check `GET /api/ml/status` — and return a clear error
+when models are missing.
 
 ## API
 
-All endpoints under `/api/`. Auth via `Authorization: Bearer <token>`.
+All endpoints under `/api/`. Auth via `Authorization: Bearer <token>` after
+`POST /api/auth/login`.
 
 | Route | Method | Description |
 |---|---|---|
@@ -42,11 +69,13 @@ All endpoints under `/api/`. Auth via `Authorization: Bearer <token>`.
 | `/api/auth/register` | POST | Register (first user = admin) |
 | `/api/auth/login` | POST | Login |
 | `/api/auth/refresh` | POST | Refresh token |
+| `/api/auth/logout` | POST | Logout |
 | `/api/auth/me` | GET | Current user |
+| `/api/auth/invites` | POST | Create invite |
 | `/api/photos` | GET/POST | List / upload |
 | `/api/photos/:id` | GET/DELETE | Get / delete |
-| `/api/photos/:id/content` | GET | Download bytes |
-| `/api/photos/:id/thumb` | GET | Thumbnail |
+| `/api/photos/:id/content` | GET | Download full image |
+| `/api/photos/:id/thumb` | GET | Download thumbnail |
 | `/api/photos/:id/favorite` | PUT | Toggle favorite |
 | `/api/photos/:id/archive` | PUT | Toggle archive |
 | `/api/photos/:id/trash` | PUT | Toggle trash |
@@ -56,6 +85,7 @@ All endpoints under `/api/`. Auth via `Authorization: Bearer <token>`.
 | `/api/albums/:id/invite` | POST | Create invite |
 | `/api/albums/invites/accept` | POST | Accept invite |
 | `/api/albums/:id/members` | GET | List members |
+| `/api/albums/:id/members/:user_id` | DELETE | Remove member |
 | `/api/albums/shared` | GET | Shared with me |
 | `/api/sync/changes` | GET | Delta pull |
 | `/api/sync/push` | POST | Push changes |
@@ -67,13 +97,13 @@ All endpoints under `/api/`. Auth via `Authorization: Bearer <token>`.
 | `/api/creations/gif` | POST | Create GIF |
 | `/api/creations` | GET | List creations |
 | `/api/ml/status` | GET | ML availability |
+| `/api/ml/models` | GET | List ML models |
 | `/api/ml/smart-search` | POST | CLIP search |
 | `/api/ml/people` | GET | Face groups |
-| `/api/ml/detect-faces` | POST | Detect faces in photo |
+| `/api/ml/reprocess` | POST | Reprocess photo for ML |
+| `/api/ml/detect-faces` | POST | Detect faces |
 | `/api/ml/index-photo` | POST | Index photo for search |
 
 ## License
 
 MIT OR Apache-2.0
-EOF
-echo done
