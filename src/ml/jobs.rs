@@ -22,16 +22,17 @@ impl JobQueue {
     }
 }
 
-/// Worker that processes jobs. In production, this would call ML inference.
+/// Worker scaffold. ML inference currently runs synchronously in the route
+/// handlers (see src/routes/ml.rs); this queue is reserved for moving that
+/// work off the request path. Until wired into AppState + main, it is unused.
 pub async fn run_worker(mut rx: mpsc::Receiver<Job>) {
     while let Some(job) = rx.recv().await {
         match job {
             Job::ProcessPhoto { photo_id, user_id } => {
-                tracing::info!("Processing photo {} for user {}", photo_id, user_id);
-                // TODO: call inference engine
+                tracing::info!("Processing photo {} for user {} (inference not yet wired)", photo_id, user_id);
             }
             Job::ReprocessAll { user_id } => {
-                tracing::info!("Reprocessing all photos for user {}", user_id);
+                tracing::info!("Reprocessing all photos for user {} (inference not yet wired)", user_id);
             }
         }
     }

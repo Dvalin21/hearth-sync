@@ -20,10 +20,19 @@ pub mod memories;
 pub mod ml;
 
 pub fn router(state: AppState) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(tower_http::cors::Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = if state.config.cors_origins.trim() == "*" {
+        CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any)
+    } else {
+        let origins: Vec<axum::http::HeaderValue> = state
+            .config
+            .cors_origins
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        CorsLayer::new().allow_origin(origins).allow_methods(Any).allow_headers(Any)
+    };
 
     let max_bytes = state.config.max_upload_mb * 1024 * 1024;
 

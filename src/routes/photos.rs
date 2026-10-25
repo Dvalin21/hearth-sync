@@ -96,7 +96,6 @@ pub async fn upload(State(state): State<AppState>, headers: axum::http::HeaderMa
     let uid = auth_user(&state, &headers)?;
     // read file field + optional metadata fields (PhotoSyncWorker sends them)
     let mut file_bytes: Option<Vec<u8>> = None;
-    let mut file_name = String::from("photo.jpg");
     let mut mime = String::from("image/jpeg");
     let mut taken_at_opt: Option<i64> = None;
     let mut lat_opt: Option<f64> = None;
@@ -106,7 +105,6 @@ pub async fn upload(State(state): State<AppState>, headers: axum::http::HeaderMa
     while let Some(field) = multipart.next_field().await.map_err(|e| AppError::BadRequest(e.to_string()))? {
         match field.name().unwrap_or("") {
             "file" => {
-                file_name = field.file_name().unwrap_or("photo.jpg").to_string();
                 mime = field.content_type().unwrap_or("image/jpeg").to_string();
                 file_bytes = Some(field.bytes().await.map_err(|e| AppError::BadRequest(e.to_string()))?.to_vec());
             }

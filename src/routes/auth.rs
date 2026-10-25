@@ -43,10 +43,6 @@ pub struct RefreshReq {
     pub refresh_token: String,
 }
 
-fn db(state: &AppState) -> Result<r2d2::PooledConnection<SqliteConnectionManager>> {
-    conn(&state.db).map_err(AppError::Db)
-}
-
 pub async fn register(State(state): State<AppState>, Json(req): Json<RegisterReq>) -> Result<Json<AuthResp>> {
     if req.username.trim().is_empty() || req.password.len() < 8 {
         return Err(AppError::BadRequest("username required and password >= 8 chars".into()));

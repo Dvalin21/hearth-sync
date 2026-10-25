@@ -41,8 +41,8 @@ impl Config {
             .clone()
             .or_else(|| std::env::var("HEARTH_SYNC_JWT_SECRET").ok())
             .unwrap_or_else(|| {
-                // Dev-only fallback; warn.
-                "dev-insecure-secret-change-me".to_string()
+                // Fail loudly rather than silently running with an insecure key.
+                panic!("HEARTH_SYNC_JWT_SECRET is required; generate one with: openssl rand -hex 32")
             })
     }
 }

@@ -7,6 +7,17 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
 
+    let secret_ok = config
+        .jwt_secret
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+        || std::env::var("HEARTH_SYNC_JWT_SECRET").map(|s| !s.trim().is_empty()).unwrap_or(false);
+    if !secret_ok {
+        eprintln!("ERROR: HEARTH_SYNC_JWT_SECRET is required and non-empty. Generate one with: openssl rand -hex 32");
+        std::process::exit(1);
+    }
+
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(&config.log_level))
         .with(tracing_subscriber::fmt::layer().json())
@@ -33,6 +44,18 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    let ctrl_c = async { let _ = tokio::signal::ctrl_c().await; };
+    #[cfg(unix)]
+    let terminate = async {
+        if let Ok(mut sig) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            sig.recv().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
     tracing::info!("shutdown signal received");
 }
