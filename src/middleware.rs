@@ -1,5 +1,7 @@
+use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
+use crate::AppState;
 use axum::response::Response;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -41,6 +43,7 @@ impl RateLimiter {
 
 /// Rate limiting middleware. Applies per-IP limits.
 pub async fn rate_limit_middleware(
+    State(state): State<AppState>,
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
@@ -54,15 +57,24 @@ pub async fn rate_limit_middleware(
         .trim()
         .to_string();
 
-    // Auth endpoints get stricter limits
     let path = req.uri().path();
-    let is_auth = path.starts_with("/api/auth/");
-    let (max, window) = if is_auth { (10, 60) } else { (100, 60) };
-
-    // Use a global limiter (simplified; per-instance in production)
-    let limiter = RateLimiter::new(max, window);
+    let is_auth = path.starts_with("/api/auth/") || path.starts_with("/api/v1/auth/");
+    let limiter = if is_auth { &state.auth_rate_limiter } else { &state.rate_limiter };
     if !limiter.check(&ip) {
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
     Ok(next.run(req).await)
+}
+
+/// Attach a unique request id to each response.
+pub async fn request_id_middleware(
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut res = next.run(req).await;
+    if let Ok(v) = id.parse() {
+        res.headers_mut().insert("X-Request-Id", v);
+    }
+    res
 }

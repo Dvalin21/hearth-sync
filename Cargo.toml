@@ -1,6 +1,6 @@
 [package]
 name = "hearth-sync"
-version = "0.1.0"
+version = "1.2.1"
 edition = "2021"
 rust-version = "1.80"
 description = "Optional self-hosted sync server for HearthBoard (photos, search, ML)."
@@ -12,7 +12,7 @@ default = []
 # Enable in-process ML (face detection, CLIP, OCR) via ONNX Runtime.
 ml = ["dep:ort"]
 # Enable direct TLS (otherwise terminate TLS at a reverse proxy).
-tls = ["dep:rustls", "dep:tokio-rustls"]
+tls = ["dep:rustls", "dep:tokio-rustls", "dep:hyper-util", "dep:rustls-pemfile"]
 
 [dependencies]
 # Web
@@ -64,12 +64,16 @@ mime_guess = "2"
 
 # Optional
 rustls = { version = "0.23", optional = true }
+rustls-pemfile = { version = "2", optional = true }
 ort = { version = "2.0.0-rc.15", optional = true }
 tokio-rustls = { version = "0.26", optional = true }
+hyper-util = { version = "0.1", optional = true, features = ["tokio"] }
 
 [dev-dependencies]
 tempfile = "3"
 reqwest = { version = "0.12", features = ["multipart", "json"] }
+http-body-util = "0.1"
+tower = "0.4"
 
 [profile.release]
 lto = true

@@ -20,6 +20,8 @@ pub struct AppState {
     pub db: DbPool,
     pub store: ObjectStore,
     pub rate_limiter: std::sync::Arc<RateLimiter>,
+    pub auth_rate_limiter: std::sync::Arc<RateLimiter>,
+    pub job_tx: tokio::sync::mpsc::Sender<crate::ml::Job>,
 }
 
 pub fn build_router(state: AppState) -> Router {
