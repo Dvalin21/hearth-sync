@@ -1,15 +1,12 @@
 use crate::db::conn;
 use crate::error::{AppError, Result};
 use axum::http::StatusCode;
-use axum::http::HeaderMap;
 use crate::AppState;
 use axum::extract::{Path, State};
 use axum::Json;
 use chrono::Utc;
-use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use uuid::Uuid;
 
 fn auth_user(state: &AppState, headers: &axum::http::HeaderMap) -> Result<String> {

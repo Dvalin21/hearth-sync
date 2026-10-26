@@ -1,11 +1,9 @@
 use crate::db::conn;
 use crate::error::{AppError, Result};
-use crate::ml::{cosine_similarity, search_similar, store_embedding, bytes_to_vec};
 use crate::AppState;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::Json;
-use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -243,4 +241,44 @@ pub async fn index_photo(State(state): State<AppState>, headers: HeaderMap, Json
     }
     crate::ml::store_embedding(&state.db, photo_id, &emb, "clip-vit-b32")?;
     Ok(Json(json!({"photo_id": photo_id, "indexed": true, "embedding_dim": emb.len()})))
+}
+
+#[derive(Deserialize)]
+pub struct OcrReq {
+    pub photo_id: String,
+}
+
+pub async fn ocr(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<OcrReq>) -> Result<Json<serde_json::Value>> {
+    let uid = auth_user(&state, &headers)?;
+    let photo_id = req.photo_id.clone();
+    let pool = state.db.clone();
+    let store = state.store.clone();
+    let model_dir = state.config.data_dir.join("models");
+    let photo_id_for_load = photo_id.clone();
+    let (hash, _mime) = tokio::task::spawn_blocking(move || -> Result<(String, String)> {
+        let c = conn(&pool).map_err(AppError::Db)?;
+        let p = crate::routes::photos::load_photo(&c, &photo_id_for_load)?;
+        if p.user_id != uid { return Err(AppError::Forbidden); }
+        Ok((p.content_hash, p.mime_type))
+    }).await.map_err(|e| AppError::Internal(e.to_string()))??;
+
+    // Write bytes to temp file and run OCR via python helper.
+    let data = store.get(&hash)?;
+    let tmp = std::env::temp_dir().join(format!("ocr_{}.jpg", hash));
+    std::fs::write(&tmp, &data).map_err(|e| AppError::Internal(e.to_string()))?;
+    let engine = crate::ml::InferenceEngine::new(model_dir.clone());
+    let text = engine.ocr(&tmp.to_string_lossy()).map_err(AppError::Internal)?;
+    let _ = std::fs::remove_file(&tmp);
+
+    // Store result
+    let pool = state.db.clone();
+    let pid = photo_id.clone();
+    let t = text.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let c = conn(&pool).map_err(AppError::Db)?;
+        c.execute("UPDATE photos SET ocr_text = ?1 WHERE id = ?2", rusqlite::params![t, pid])?;
+        Ok(())
+    }).await.map_err(|e| AppError::Internal(e.to_string()))??;
+
+    Ok(Json(serde_json::json!({"photo_id": photo_id, "text": text})))
 }

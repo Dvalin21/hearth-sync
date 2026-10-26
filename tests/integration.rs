@@ -16,6 +16,7 @@ fn make_state(tmp: &TempDir) -> AppState {
         cors_origins: "*".into(),
         tls_cert: None,
         tls_key: None,
+        ml_service_url: None,
     };
     let db = db::init_pool(&config.db_path()).unwrap();
     let store = ObjectStore::new(config.objects_dir(), config.thumbs_dir()).unwrap();
@@ -27,6 +28,7 @@ fn make_state(tmp: &TempDir) -> AppState {
         rate_limiter: Arc::new(RateLimiter::new(10000, 60)),
         auth_rate_limiter: Arc::new(RateLimiter::new(10000, 60)),
         job_tx: tx,
+        metrics: std::sync::Arc::new(hearth_sync::metrics::Metrics::default()),
     }
 }
 
@@ -113,7 +115,7 @@ async fn photo_upload_and_list() {
     let r = client.get(format!("{}/api/photos", base)).bearer_auth(tok).send().await.unwrap();
     assert!(r.status().is_success());
     let arr: Value = r.json().await.unwrap();
-    assert!(arr.as_array().unwrap().len() >= 1);
+    assert!(!arr.as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -205,4 +207,14 @@ async fn sync_changes_empty() {
     let tok = j["access_token"].as_str().unwrap();
     let r = client.get(format!("{}/api/sync/changes", base)).bearer_auth(tok).send().await.unwrap();
     assert!(r.status().is_success());
+}
+
+#[tokio::test]
+async fn metrics_endpoint() {
+    let tmp = TempDir::new().unwrap();
+    let (base, _h) = spawn_server(make_state(&tmp)).await;
+    let resp = reqwest::get(format!("{}/metrics", base)).await.unwrap();
+    assert!(resp.status().is_success());
+    let text = resp.text().await.unwrap();
+    assert!(text.contains("hearth_sync_requests_total"));
 }

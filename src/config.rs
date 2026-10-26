@@ -25,6 +25,9 @@ pub struct Config {
     #[arg(long, env = "HEARTH_SYNC_CORS_ORIGINS", default_value = "*")]
     pub cors_origins: String,
 
+    #[arg(long, env = "HEARTH_SYNC_ML_SERVICE_URL")]
+    pub ml_service_url: Option<String>,
+
     #[arg(long, env = "HEARTH_SYNC_TLS_CERT")]
     pub tls_cert: Option<PathBuf>,
 

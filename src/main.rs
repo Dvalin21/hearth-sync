@@ -7,8 +7,11 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
+    /// Optional TOML config file (values become env vars).
+    #[arg(long)]
+    config: Option<std::path::PathBuf>,
     #[command(flatten)]
-    config: Config,
+    config_opts: Config,
 }
 
 #[derive(Subcommand)]
@@ -22,7 +25,16 @@ enum Commands {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let config = cli.config;
+    // Load optional TOML config into env vars before parsing Config.
+    if let Some(path) = &cli.config {
+        let text = std::fs::read_to_string(path)?;
+        let table: toml::Table = text.parse()?;
+        for (k, v) in table {
+            let env_key = format!("HEARTH_SYNC_{}", k.to_uppercase());
+            std::env::set_var(env_key, v.to_string().trim_matches('"'));
+        }
+    }
+    let config = cli.config_opts;
 
     // Backup/restore are synchronous CLI ops; handle before server startup.
     if let Some(cmd) = cli.command {
@@ -85,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
         rate_limiter: std::sync::Arc::new(RateLimiter::new(100, 60)),
         auth_rate_limiter: std::sync::Arc::new(RateLimiter::new(10, 60)),
         job_tx,
+        metrics: std::sync::Arc::new(hearth_sync::metrics::Metrics::default()),
     };
 
     let app = build_router(state);

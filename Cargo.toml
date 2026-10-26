@@ -53,6 +53,7 @@ uuid = { version = "=1.10.0", features = ["v4", "serde"] }
 # Config / errors / logging
 clap = { version = "4", features = ["derive", "env"] }
 config = "0.14"
+toml = "0.8"
 thiserror = "1"
 anyhow = "1"
 tracing = "0.1"

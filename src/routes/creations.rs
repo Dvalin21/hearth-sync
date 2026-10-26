@@ -5,10 +5,8 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::Json;
 use chrono::Utc;
-use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use uuid::Uuid;
 
 fn auth_user(state: &AppState, headers: &HeaderMap) -> Result<String> {
@@ -79,7 +77,7 @@ pub async fn collage(State(state): State<AppState>, headers: HeaderMap, Json(req
     // build grid collage
     let n = images.len();
     let cols = ((n as f64).sqrt().ceil() as u32).max(1);
-    let rows = (n as u32 + cols - 1) / cols;
+    let rows = (n as u32).div_ceil(cols);
     let cell = 512u32;
     let w = cols * cell;
     let h = rows * cell;
@@ -140,7 +138,7 @@ pub async fn gif(State(state): State<AppState>, headers: HeaderMap, Json(req): J
         let mut encoder = Encoder::new(&mut buf, 480, 480, &[]).map_err(|e| AppError::Internal(e.to_string()))?;
         encoder.set_repeat(Repeat::Infinite).map_err(|e| AppError::Internal(e.to_string()))?;
         for img in &frames {
-            let mut rgba = img.to_rgba8();
+            let rgba = img.to_rgba8();
             let mut frame = Frame::from_rgba_speed(480, 480, &mut rgba.into_raw(), 10);
             frame.delay = 20;
             encoder.write_frame(&frame).map_err(|e| AppError::Internal(e.to_string()))?;

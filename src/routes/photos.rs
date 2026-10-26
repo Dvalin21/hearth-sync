@@ -1,16 +1,13 @@
 use crate::db::conn;
 use crate::error::{AppError, Result};
-use axum::http::HeaderMap;
 use crate::AppState;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::Utc;
-use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use uuid::Uuid;
 
 #[derive(Serialize, Clone)]
@@ -186,7 +183,7 @@ pub async fn upload(State(state): State<AppState>, headers: axum::http::HeaderMa
     Ok(Json(photo))
 }
 
-fn load_photo(c: &rusqlite::Connection, id: &str) -> Result<Photo> {
+pub fn load_photo(c: &rusqlite::Connection, id: &str) -> Result<Photo> {
     c.query_row(
         "SELECT id,user_id,content_hash,width,height,taken_at,imported_at,size_bytes,mime_type,is_favorite,is_archived,is_trashed,caption,camera_make,camera_model,updated_at FROM photos WHERE id = ?1",
         params![id],
@@ -241,7 +238,7 @@ pub async fn delete(State(state): State<AppState>, headers: axum::http::HeaderMa
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn content(State(state): State<AppState>, headers: axum::http::HeaderMap, Path(id): Path<String>) -> Result<impl IntoResponse> {
+pub async fn content(State(state): State<AppState>, headers: axum::http::HeaderMap, Path(id): Path<String>) -> Result<axum::response::Response> {
     let uid = auth_user(&state, &headers)?;
     let pool = state.db.clone();
     let store = state.store.clone();
@@ -252,7 +249,36 @@ pub async fn content(State(state): State<AppState>, headers: axum::http::HeaderM
         Ok((p.content_hash, p.mime_type))
     }).await.map_err(|e| AppError::Internal(e.to_string()))??;
     let data = store.get(&hash)?;
-    Ok(([(header::CONTENT_TYPE, mime)], data))
+    // Basic Range support: bytes=start-end
+    if let Some(range) = headers.get(axum::http::header::RANGE) {
+        if let Ok(r) = range.to_str() {
+            if let Some(spec) = r.strip_prefix("bytes=") {
+                let parts: Vec<&str> = spec.split('-').collect();
+                if parts.len() == 2 {
+                    let start: usize = parts[0].parse().unwrap_or(0);
+                    let end: usize = if parts[1].is_empty() { data.len().saturating_sub(1) } else { parts[1].parse().unwrap_or(data.len().saturating_sub(1)) };
+                    let end = end.min(data.len().saturating_sub(1));
+                    if start <= end && start < data.len() {
+                        let slice = data[start..=end].to_vec();
+                        let cr = format!("bytes {}-{}/{}", start, end, data.len());
+                        let resp = axum::response::Response::builder()
+                            .status(StatusCode::PARTIAL_CONTENT)
+                            .header(header::CONTENT_TYPE, mime.clone())
+                            .header(header::CONTENT_RANGE, cr)
+                            .body(axum::body::Body::from(slice))
+                            .unwrap();
+                        return Ok(resp);
+                    }
+                }
+            }
+        }
+    }
+    let resp = axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime)
+        .body(axum::body::Body::from(data))
+        .unwrap();
+    Ok(resp)
 }
 
 pub async fn thumb(State(state): State<AppState>, headers: axum::http::HeaderMap, Path(id): Path<String>) -> Result<impl IntoResponse> {

@@ -5,6 +5,7 @@ pub mod error;
 pub mod routes;
 pub mod storage;
 pub mod middleware;
+pub mod metrics;
 pub mod ml;
 
 use crate::config::Config;
@@ -12,7 +13,6 @@ use crate::db::DbPool;
 use crate::storage::ObjectStore;
 use crate::middleware::RateLimiter;
 use axum::Router;
-use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -22,6 +22,7 @@ pub struct AppState {
     pub rate_limiter: std::sync::Arc<RateLimiter>,
     pub auth_rate_limiter: std::sync::Arc<RateLimiter>,
     pub job_tx: tokio::sync::mpsc::Sender<crate::ml::Job>,
+    pub metrics: std::sync::Arc<metrics::Metrics>,
 }
 
 pub fn build_router(state: AppState) -> Router {

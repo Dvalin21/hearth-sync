@@ -5,8 +5,6 @@ use crate::AppState;
 use axum::extract::State;
 use axum::Json;
 use chrono::Utc;
-use r2d2::PooledConnection;
-use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

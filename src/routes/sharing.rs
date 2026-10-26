@@ -5,7 +5,6 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::Json;
 use chrono::Utc;
-use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -162,4 +161,87 @@ pub async fn shared_with_me(State(state): State<AppState>, headers: HeaderMap) -
         Ok(out)
     }).await.map_err(|e| AppError::Internal(e.to_string()))??;
     Ok(Json(albums))
+}
+
+#[derive(serde::Deserialize)]
+pub struct AutoShareReq {
+    pub person_ids: Option<Vec<String>>,
+    pub from_date: Option<i64>,
+    pub to_date: Option<i64>,
+}
+
+pub async fn auto_share(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(album_id): Path<String>,
+    Json(req): Json<AutoShareReq>,
+) -> Result<Json<serde_json::Value>> {
+    let uid = auth_user(&state, &headers)?;
+    let pool = state.db.clone();
+    let count = tokio::task::spawn_blocking(move || -> Result<i64> {
+        let c = conn(&pool).map_err(AppError::Db)?;
+        // verify album ownership
+        let owner: String = c.query_row("SELECT user_id FROM albums WHERE id = ?1", params![album_id], |r| r.get(0)).map_err(|_| AppError::NotFound)?;
+        if owner != uid { return Err(AppError::Forbidden); }
+        // build query
+        let mut sql = "SELECT id FROM photos WHERE user_id = ?1 AND is_trashed = 0".to_string();
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(uid.clone())];
+        if let Some(from) = req.from_date {
+            sql.push_str(" AND taken_at >= ?");
+            params_vec.push(Box::new(from));
+        }
+        if let Some(to) = req.to_date {
+            sql.push_str(" AND taken_at <= ?");
+            params_vec.push(Box::new(to));
+        }
+        let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+        let mut stmt = c.prepare(&sql)?;
+        let ids: Vec<String> = stmt.query_map(params_refs.as_slice(), |r| r.get(0))?.filter_map(|r| r.ok()).collect();
+        // filter by person_ids if provided
+        let mut added = 0i64;
+        for pid in &ids {
+            let person_ok = if let Some(pids) = &req.person_ids {
+                let p: String = c.query_row("SELECT person_ids FROM photos WHERE id = ?1", params![pid], |r| r.get(0)).unwrap_or_default();
+                pids.iter().any(|wanted| p.split(',').any(|x| x == wanted))
+            } else { true };
+            if !person_ok { continue; }
+            let _ = c.execute("INSERT OR IGNORE INTO album_photos (album_id, photo_id) VALUES (?1, ?2)", params![album_id, pid]);
+            added += 1;
+        }
+        Ok(added)
+    }).await.map_err(|e| AppError::Internal(e.to_string()))??;
+    Ok(Json(serde_json::json!({"added": count})))
+}
+
+pub async fn notifications(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>> {
+    let _uid = auth_user(&state, &headers)?;
+    let since: i64 = params.get("since").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let pool = state.db.clone();
+    let items = tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>> {
+        let c = conn(&pool).map_err(AppError::Db)?;
+        // photos in shared albums (albums where user is member) added after `since`
+        let mut stmt = c.prepare(
+            "SELECT p.id, p.content_hash, p.taken_at, a.name, a.id \
+             FROM photos p JOIN album_photos ap ON ap.photo_id = p.id \
+             JOIN albums a ON a.id = ap.album_id \
+             WHERE a.is_shared = 1 AND p.imported_at > ?1 \
+             ORDER BY p.imported_at DESC LIMIT 100",
+        )?;
+        let rows = stmt.query_map(params![since], |r| {
+            Ok(serde_json::json!({
+                "photo_id": r.get::<_, String>(0)?,
+                "album_name": r.get::<_, String>(3)?,
+                "album_id": r.get::<_, String>(4)?,
+                "taken_at": r.get::<_, Option<i64>>(2)?,
+            }))
+        })?;
+        let mut out = Vec::new();
+        for v in rows.flatten() { out.push(v); }
+        Ok(out)
+    }).await.map_err(|e| AppError::Internal(e.to_string()))??;
+    Ok(Json(serde_json::json!({"items": items, "now": chrono::Utc::now().timestamp()})))
 }

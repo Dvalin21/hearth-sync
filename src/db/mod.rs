@@ -28,6 +28,7 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     // Idempotent column additions for existing DBs
     let _ = conn.execute("ALTER TABLE albums ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0", []);
     let _ = conn.execute("ALTER TABLE photos ADD COLUMN person_ids TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE photos ADD COLUMN ocr_text TEXT", []);
     Ok(())
 }
 

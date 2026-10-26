@@ -5,7 +5,6 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::Json;
 use chrono::{Datelike, Utc};
-use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -92,7 +91,7 @@ fn generate_on_this_day(c: &rusqlite::Connection, uid: &str) -> Result<()> {
     if exists > 0 { return Ok(()); }
     let id = Uuid::new_v4().to_string();
     let ids = matching.join(",");
-    let title = format!("On this day");
+    let title = "On this day".to_string();
     c.execute(
         "INSERT INTO memories (id, user_id, kind, title, photo_ids, created_at, hidden) VALUES (?1,?2,'on_this_day',?3,?4,?5,0)",
         params![id, uid, title, ids, now.timestamp()],

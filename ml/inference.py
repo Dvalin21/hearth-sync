@@ -53,6 +53,30 @@ def detect_faces(path, model_dir):
         print(json.dumps({"error": str(e)}), file=sys.stderr)
         sys.exit(1)
 
+def ocr(path, model_dir):
+    try:
+        # Prefer pytesseract if available
+        try:
+            import pytesseract
+            from PIL import Image
+            img = Image.open(path)
+            text = pytesseract.image_to_string(img)
+            print(json.dumps({"text": text}))
+            return
+        except Exception:
+            pass
+        # Fallback: tesseract CLI
+        import subprocess
+        out = subprocess.run(["tesseract", path, "stdout"], capture_output=True, text=True)
+        if out.returncode == 0:
+            print(json.dumps({"text": out.stdout}))
+            return
+        print(json.dumps({"error": "OCR not available: install tesseract or pytesseract"}), file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(json.dumps({"error": str(e)}), file=sys.stderr)
+        sys.exit(1)
+
 if __name__ == "__main__":
     cmd = sys.argv[1]
     arg = sys.argv[2]
@@ -63,6 +87,8 @@ if __name__ == "__main__":
         encode_text(arg, model_dir)
     elif cmd == "detect_faces":
         detect_faces(arg, model_dir)
+    elif cmd == "ocr":
+        ocr(arg, model_dir)
     else:
         print(json.dumps({"error": f"unknown command {cmd}"}), file=sys.stderr)
         sys.exit(1)

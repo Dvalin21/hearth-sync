@@ -3,7 +3,7 @@ use ort::session::Session;
 #[cfg(feature = "ml")]
 use ort::value::Tensor;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Inference engine. Uses ort (ONNX Runtime) when compiled with `ml` feature.
 /// Falls back to Python/torch helper otherwise.
@@ -150,7 +150,7 @@ impl InferenceEngine {
 
     fn python_encode_image(&self, image_path: &str) -> Result<Vec<f32>, String> {
         let output = std::process::Command::new("python3")
-            .arg(&self.model_dir.join("../ml/inference.py"))
+            .arg(self.model_dir.join("../ml/inference.py"))
             .arg("encode_image")
             .arg(image_path)
             .arg(&self.model_dir)
@@ -166,7 +166,7 @@ impl InferenceEngine {
 
     fn python_encode_text(&self, text: &str) -> Result<Vec<f32>, String> {
         let output = std::process::Command::new("python3")
-            .arg(&self.model_dir.join("../ml/inference.py"))
+            .arg(self.model_dir.join("../ml/inference.py"))
             .arg("encode_text")
             .arg(text)
             .arg(&self.model_dir)
@@ -182,7 +182,7 @@ impl InferenceEngine {
 
     fn python_detect_faces(&self, image_path: &str) -> Result<Vec<FaceDetection>, String> {
         let output = std::process::Command::new("python3")
-            .arg(&self.model_dir.join("../ml/inference.py"))
+            .arg(self.model_dir.join("../ml/inference.py"))
             .arg("detect_faces")
             .arg(image_path)
             .arg(&self.model_dir)
@@ -207,6 +207,22 @@ impl InferenceEngine {
                     .unwrap_or_default(),
             })
             .collect())
+    }
+
+    pub fn ocr(&self, image_path: &str) -> Result<String, String> {
+        let out = std::process::Command::new("python3")
+            .arg(self.model_dir.join("../ml/inference.py"))
+            .arg("ocr")
+            .arg(image_path)
+            .arg(&self.model_dir)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).to_string());
+        }
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
+        if let Some(err) = v.get("error") { return Err(err.as_str().unwrap_or("ocr failed").to_string()); }
+        Ok(v.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string())
     }
 }
 

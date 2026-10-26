@@ -1,4 +1,3 @@
-use crate::error::{AppError, Result};
 use crate::AppState;
 use crate::middleware::{rate_limit_middleware, request_id_middleware};
 use axum::extract::DefaultBodyLimit;
@@ -18,6 +17,7 @@ pub mod creations;
 pub mod sharing;
 pub mod memories;
 pub mod ml;
+pub mod metrics;
 
 pub fn router(state: AppState) -> Router {
     let cors = if state.config.cors_origins.trim() == "*" {
@@ -65,7 +65,9 @@ pub fn router(state: AppState) -> Router {
         .route("/albums/invites/accept", post(sharing::accept))
         .route("/albums/:id/members", get(sharing::members))
         .route("/albums/:id/members/:user_id", delete(sharing::remove_member))
+        .route("/albums/:id/auto-share", post(sharing::auto_share))
         .route("/albums/shared", get(sharing::shared_with_me))
+        .route("/notifications", get(sharing::notifications))
         .route("/memories", get(memories::list))
         .route("/memories/:id/hide", put(memories::hide))
         .route("/ml/status", get(ml::status))
@@ -75,6 +77,7 @@ pub fn router(state: AppState) -> Router {
         .route("/ml/reprocess", post(ml::reprocess))
         .route("/ml/detect-faces", post(ml::detect_faces))
         .route("/ml/index-photo", post(ml::index_photo))
+        .route("/ml/ocr", post(ml::ocr))
         .layer(RequestBodyLimitLayer::new(max_bytes as usize))
         .layer(DefaultBodyLimit::max(max_bytes as usize))
         .layer(TraceLayer::new_for_http())
@@ -83,6 +86,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
+        .route("/metrics", get(metrics::metrics))
         .nest("/api", api.clone())
         .nest("/api/v1", api)
         .layer(axum::middleware::from_fn_with_state(state.clone(), rate_limit_middleware))

@@ -3,7 +3,6 @@ use crate::error::{AppError, Result};
 use crate::AppState;
 use axum::extract::{Query, State};
 use axum::Json;
-use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 

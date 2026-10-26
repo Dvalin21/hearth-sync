@@ -3,7 +3,6 @@ use crate::error::{AppError, Result};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::params;
-use std::sync::Arc;
 
 /// Compute cosine similarity between two vectors.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {

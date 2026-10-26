@@ -29,8 +29,8 @@ pub fn cluster_faces(embeddings: &[Vec<f32>], eps: f32, min_points: usize) -> Ve
         // Start new cluster
         labels[i] = cluster_id;
         let mut queue = vec![i];
-        while !queue.is_empty() {
-            let q = queue.pop().unwrap();
+        while let Some(q) = queue.pop() {
+            
             if neighbors[q].len() < min_points {
                 continue;
             }
