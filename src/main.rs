@@ -105,6 +105,17 @@ async fn main() -> anyhow::Result<()> {
     let addr: SocketAddr = config.listen.parse()?;
     tracing::info!("hearth-sync listening on {}", addr);
 
+    // Optional direct TLS (feature "tls").
+    #[cfg(feature = "tls")]
+    if let (Some(cert), Some(key)) = (&config.tls_cert, &config.tls_key) {
+        use axum_server::tls_rustls::RustlsConfig;
+        let tls = RustlsConfig::from_pem_file(cert, key).await.map_err(|e| anyhow::anyhow!("{}", e))?;
+        axum_server::bind_rustls(addr, tls)
+            .serve(app.into_make_service())
+            .await?;
+        return Ok(());
+    }
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
     Ok(())

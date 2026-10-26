@@ -58,6 +58,17 @@ pub struct SmartSearchReq {
 
 pub async fn smart_search(State(state): State<AppState>, headers: HeaderMap, Json(req): Json<SmartSearchReq>) -> Result<Json<serde_json::Value>> {
     let uid = auth_user(&state, &headers)?;
+    // Remote ML delegation
+    if let Some(url) = &state.config.ml_service_url {
+        let client = reqwest::Client::new();
+        let resp = client.post(format!("{}/smart-search", url.trim_end_matches('/')))
+            .json(&serde_json::json!({"query": req.query, "limit": req.limit, "user_id": uid}))
+            .send().await.map_err(|e| AppError::Internal(e.to_string()))?;
+        if resp.status().is_success() {
+            let j: serde_json::Value = resp.json().await.map_err(|e| AppError::Internal(e.to_string()))?;
+            return Ok(Json(j));
+        }
+    }
     let engine = crate::ml::InferenceEngine::new(state.config.data_dir.join("models"));
     if !engine.is_available() {
         return Err(AppError::BadRequest("ML not available: python3 with torch required".into()));

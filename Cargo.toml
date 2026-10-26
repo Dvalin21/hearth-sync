@@ -12,16 +12,18 @@ default = []
 # Enable in-process ML (face detection, CLIP, OCR) via ONNX Runtime.
 ml = ["dep:ort"]
 # Enable direct TLS (otherwise terminate TLS at a reverse proxy).
-tls = ["dep:rustls", "dep:tokio-rustls", "dep:hyper-util", "dep:rustls-pemfile"]
+tls = ["dep:rustls", "dep:tokio-rustls", "dep:hyper-util", "dep:rustls-pemfile", "dep:axum-server"]
 
 [dependencies]
 # Web
 axum = { version = "0.7", features = ["multipart", "macros"] }
+axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
 axum-extra = { version = "0.9", features = ["typed-header"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace", "limit", "timeout", "compression-gzip"] }
 tokio = { version = "1", features = ["full"] }
 hyper = "1"
+reqwest = { version = "0.12", features = ["json"] }
 
 # DB
 rusqlite = { version = "0.31", features = ["bundled", "functions"] }
