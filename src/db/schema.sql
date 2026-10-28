@@ -42,7 +42,11 @@ CREATE TABLE IF NOT EXISTS photos (
     camera_make TEXT NOT NULL DEFAULT '',
     camera_model TEXT NOT NULL DEFAULT '',
     sync_state TEXT NOT NULL DEFAULT 'synced',
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    -- Monotonic per-user cursor. `updated_at` is seconds, so it cannot order
+    -- changes: two writes in the same second are indistinguishable. The cursor
+    -- handed to clients is this column, which never ties.
+    sync_seq INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_photos_user ON photos(user_id);
@@ -85,8 +89,16 @@ CREATE TABLE IF NOT EXISTS tombstones (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     entity_type TEXT NOT NULL,
     entity_id TEXT NOT NULL,
-    deleted_at INTEGER NOT NULL
+    deleted_at INTEGER NOT NULL,
+    sync_seq INTEGER NOT NULL DEFAULT 0
 );
+
+-- Per-user monotonic counter backing photos.sync_seq / tombstones.sync_seq.
+CREATE TABLE IF NOT EXISTS sync_seq (
+    user_id TEXT PRIMARY KEY,
+    next_seq INTEGER NOT NULL
+);
+
 
 CREATE TABLE IF NOT EXISTS creations (
     id TEXT PRIMARY KEY,

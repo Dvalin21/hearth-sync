@@ -63,23 +63,23 @@ pub async fn list(State(state): State<AppState>, headers: HeaderMap) -> Result<J
 fn generate_on_this_day(c: &rusqlite::Connection, uid: &str) -> Result<()> {
     use rusqlite::params;
     let now = Utc::now();
-    let today_month = now.month();
-    let today_day = now.day();
-    // find photos taken on this day in previous years
+    // Previously this loaded every dated photo the user owns and did the
+    // month/day/year comparison in Rust. SQLite can answer it with an index
+    // scan; `unixepoch` is UTC, which is the same calendar the Rust code used.
     let mut stmt = c.prepare(
-        "SELECT id, taken_at FROM photos WHERE user_id = ?1 AND is_trashed = 0 AND taken_at IS NOT NULL",
+        "SELECT id FROM photos
+         WHERE user_id = ?1 AND is_trashed = 0 AND taken_at IS NOT NULL
+           AND CAST(strftime('%m', taken_at, 'unixepoch') AS INTEGER) = ?2
+           AND CAST(strftime('%d', taken_at, 'unixepoch') AS INTEGER) = ?3
+           AND CAST(strftime('%Y', taken_at, 'unixepoch') AS INTEGER) < ?4
+         ORDER BY taken_at ASC",
     )?;
-    let rows = stmt.query_map(params![uid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+    let rows = stmt.query_map(
+        params![uid, now.month() as i64, now.day() as i64, now.year() as i64],
+        |r| r.get::<_, String>(0),
+    )?;
     let mut matching: Vec<String> = Vec::new();
-    for r in rows {
-        let (id, ts) = r?;
-        let dt = chrono::DateTime::from_timestamp(ts, 0);
-        if let Some(d) = dt {
-            if d.month() == today_month && d.day() == today_day && d.year() < now.year() {
-                matching.push(id);
-            }
-        }
-    }
+    for r in rows { matching.push(r?); }
     if matching.is_empty() { return Ok(()); }
     // check if already generated today
     let today_start = now.date_naive().and_hms_opt(0,0,0).unwrap().and_utc().timestamp();

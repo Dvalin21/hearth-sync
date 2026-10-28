@@ -51,28 +51,18 @@ pub async fn register(State(state): State<AppState>, Json(req): Json<RegisterReq
     let password = req.password.clone();
     let username_resp = username.clone();
     let (user_id, role) = tokio::task::spawn_blocking(move || -> Result<(String, String)> {
-        let c = conn(&pool).map_err(AppError::Db)?;
+        let mut c = conn(&pool).map_err(AppError::Db)?;
+        // One transaction: the user row and the invite redemption land together
+        // or not at all. Previously the invite was marked used with the literal
+        // string "pending" *before* the insert, so a duplicate username burned
+        // the invite and no user id was ever recorded against it.
+        let tx = c.transaction().map_err(AppError::Db)?;
         // first user becomes admin
-        let count: i64 = c.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0)).unwrap_or(0);
+        let count: i64 = tx.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0)).unwrap_or(0);
         let role = if count == 0 { "admin" } else { "member" };
-        // invite check for non-first
-        if count > 0 {
-            let code = req.invite_code.clone().unwrap_or_default();
-            let valid: Option<String> = c
-                .query_row(
-                    "SELECT code FROM invites WHERE code = ?1 AND used_by IS NULL",
-                    params![code],
-                    |r| r.get(0),
-                )
-                .ok();
-            if valid.is_none() {
-                return Err(AppError::Forbidden);
-            }
-            c.execute("UPDATE invites SET used_by = ?1 WHERE code = ?2", params!["pending", code])?;
-        }
         let id = Uuid::new_v4().to_string();
         let hash = hash_password(&password).map_err(|e| AppError::Internal(e.to_string()))?;
-        c.execute(
+        tx.execute(
             "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?1,?2,?3,?4,?5)",
             params![id, username.trim(), hash, role, Utc::now().timestamp()],
         )
@@ -83,6 +73,21 @@ pub async fn register(State(state): State<AppState>, Json(req): Json<RegisterReq
                 AppError::Db(e)
             }
         })?;
+        // Invite check for non-first users. The row count is the guard: only one
+        // concurrent registration can claim an unused, unexpired code, and a
+        // zero count rolls the user row back.
+        if count > 0 {
+            let code = req.invite_code.clone().unwrap_or_default();
+            let n = tx.execute(
+                "UPDATE invites SET used_by = ?1
+                 WHERE code = ?2 AND used_by IS NULL AND (expires_at IS NULL OR expires_at > ?3)",
+                params![id, code, Utc::now().timestamp()],
+            )?;
+            if n == 0 {
+                return Err(AppError::Forbidden);
+            }
+        }
+        tx.commit().map_err(AppError::Db)?;
         Ok((id, role.to_string()))
     })
     .await
@@ -105,6 +110,7 @@ pub async fn login(State(state): State<AppState>, Json(req): Json<LoginReq>) -> 
     let username = req.username.clone();
     let password = req.password.clone();
     let username_resp = username.clone();
+    let metrics = state.metrics.clone();
     let (user_id, role, hash) = tokio::task::spawn_blocking(move || -> Result<(String, String, String)> {
         let c = conn(&pool).map_err(AppError::Db)?;
         let row: (String, String, String) = c
@@ -113,13 +119,17 @@ pub async fn login(State(state): State<AppState>, Json(req): Json<LoginReq>) -> 
                 params![username.trim()],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
-            .map_err(|_| AppError::Unauthorized)?;
+            .map_err(|_| {
+                metrics.auth_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                AppError::Unauthorized
+            })?;
         Ok(row)
     })
     .await
     .map_err(|e| AppError::Internal(e.to_string()))??;
 
     if !verify_password(&password, &hash) {
+        state.metrics.auth_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return Err(AppError::Unauthorized);
     }
     let access = issue_access_token(&secret, &user_id, &username_resp, &role)

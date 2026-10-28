@@ -198,6 +198,7 @@ pub async fn auto_share(
         let mut stmt = c.prepare(&sql)?;
         let ids: Vec<String> = stmt.query_map(params_refs.as_slice(), |r| r.get(0))?.filter_map(|r| r.ok()).collect();
         // filter by person_ids if provided
+        let now = Utc::now().timestamp();
         let mut added = 0i64;
         for pid in &ids {
             let person_ok = if let Some(pids) = &req.person_ids {
@@ -205,8 +206,16 @@ pub async fn auto_share(
                 pids.iter().any(|wanted| p.split(',').any(|x| x == wanted))
             } else { true };
             if !person_ok { continue; }
-            let _ = c.execute("INSERT OR IGNORE INTO album_photos (album_id, photo_id) VALUES (?1, ?2)", params![album_id, pid]);
-            added += 1;
+            // added_at is NOT NULL with no default: leaving it out made every
+            // insert fail, and the discarded error still reported success.
+            let n = c.execute(
+                "INSERT OR IGNORE INTO album_photos (album_id, photo_id, added_at) VALUES (?1, ?2, ?3)",
+                params![album_id, pid, now],
+            )?;
+            added += n as i64;
+        }
+        if added > 0 {
+            c.execute("UPDATE albums SET updated_at = ?1 WHERE id = ?2", params![now, album_id])?;
         }
         Ok(added)
     }).await.map_err(|e| AppError::Internal(e.to_string()))??;
@@ -218,20 +227,24 @@ pub async fn notifications(
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>> {
-    let _uid = auth_user(&state, &headers)?;
+    let uid = auth_user(&state, &headers)?;
     let since: i64 = params.get("since").and_then(|s| s.parse().ok()).unwrap_or(0);
     let pool = state.db.clone();
     let items = tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>> {
         let c = conn(&pool).map_err(AppError::Db)?;
-        // photos in shared albums (albums where user is member) added after `since`
+        // Photos added to albums this user is actually a member of. Without the
+        // membership join this returned every photo in every shared album on the
+        // server to any authenticated caller.
         let mut stmt = c.prepare(
             "SELECT p.id, p.content_hash, p.taken_at, a.name, a.id \
-             FROM photos p JOIN album_photos ap ON ap.photo_id = p.id \
+             FROM photos p \
+             JOIN album_photos ap ON ap.photo_id = p.id \
              JOIN albums a ON a.id = ap.album_id \
-             WHERE a.is_shared = 1 AND p.imported_at > ?1 \
+             JOIN album_members am ON am.album_id = a.id AND am.user_id = ?1 \
+             WHERE a.is_shared = 1 AND p.imported_at > ?2 \
              ORDER BY p.imported_at DESC LIMIT 100",
         )?;
-        let rows = stmt.query_map(params![since], |r| {
+        let rows = stmt.query_map(params![uid, since], |r| {
             Ok(serde_json::json!({
                 "photo_id": r.get::<_, String>(0)?,
                 "album_name": r.get::<_, String>(3)?,

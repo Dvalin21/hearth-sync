@@ -66,39 +66,52 @@ pub async fn collage(State(state): State<AppState>, headers: HeaderMap, Json(req
     let pool = state.db.clone();
     let ids = req.photo_ids.clone();
 
-    // load image bytes
-    let mut images: Vec<image::DynamicImage> = Vec::new();
-    for pid in &ids {
-        let p = load_photo_bytes(&pool, &store, &uid, pid)?;
-        let img = image::load_from_memory(&p).map_err(|e| AppError::BadRequest(e.to_string()))?;
-        images.push(img);
-    }
-
-    // build grid collage
-    let n = images.len();
-    let cols = ((n as f64).sqrt().ceil() as u32).max(1);
-    let rows = (n as u32).div_ceil(cols);
-    let cell = 512u32;
-    let w = cols * cell;
-    let h = rows * cell;
-    let mut canvas = image::RgbaImage::new(w, h);
-    for (i, img) in images.iter().enumerate() {
-        let r = (i as u32) / cols;
-        let ccol = (i as u32) % cols;
-        let resized = img.resize_exact(cell, cell, image::imageops::FilterType::Lanczos3);
-        let rgba = resized.to_rgba8();
-        for y in 0..cell {
-            for x in 0..cell {
-                canvas.put_pixel(ccol * cell + x, r * cell + y, *rgba.get_pixel(x, y));
+    // Decoding, resizing and JPEG encoding are CPU-bound. Running them straight
+    // in the handler blocked the async runtime for the whole collage build.
+    let hash = {
+        let pool = pool.clone();
+        let store = store.clone();
+        let uid = uid.clone();
+        let ids = ids.clone();
+        tokio::task::spawn_blocking(move || -> Result<String> {
+            // load image bytes
+            let mut images: Vec<image::DynamicImage> = Vec::new();
+            for pid in &ids {
+                let p = load_photo_bytes(&pool, &store, &uid, pid)?;
+                let img = image::load_from_memory(&p).map_err(|e| AppError::BadRequest(e.to_string()))?;
+                images.push(img);
             }
-        }
-    }
-    let dynimg = image::DynamicImage::ImageRgba8(canvas);
-    let mut buf = Vec::new();
-    dynimg.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    let stored = store.put(&buf)?;
-    let hash = stored.hash.clone();
+
+            // build grid collage
+            let n = images.len();
+            let cols = ((n as f64).sqrt().ceil() as u32).max(1);
+            let rows = (n as u32).div_ceil(cols);
+            let cell = 512u32;
+            let w = cols * cell;
+            let h = rows * cell;
+            let mut canvas = image::RgbaImage::new(w, h);
+            for (i, img) in images.iter().enumerate() {
+                let r = (i as u32) / cols;
+                let ccol = (i as u32) % cols;
+                let resized = img.resize_exact(cell, cell, image::imageops::FilterType::Lanczos3);
+                let rgba = resized.to_rgba8();
+                for y in 0..cell {
+                    for x in 0..cell {
+                        canvas.put_pixel(ccol * cell + x, r * cell + y, *rgba.get_pixel(x, y));
+                    }
+                }
+            }
+            let dynimg = image::DynamicImage::ImageRgba8(canvas);
+            let mut buf = Vec::new();
+            dynimg.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+            let stored = store.put(&buf)?;
+            Ok(stored.hash.clone())
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))??
+    };
+
     let now = Utc::now().timestamp();
     let id = Uuid::new_v4().to_string();
     let source = ids.join(",");
@@ -125,27 +138,39 @@ pub async fn gif(State(state): State<AppState>, headers: HeaderMap, Json(req): J
     let pool = state.db.clone();
     let ids = req.photo_ids.clone();
 
-    let mut frames: Vec<image::DynamicImage> = Vec::new();
-    for pid in &ids {
-        let p = load_photo_bytes(&pool, &store, &uid, pid)?;
-        let img = image::load_from_memory(&p).map_err(|e| AppError::BadRequest(e.to_string()))?;
-        frames.push(img.resize(480, 480, image::imageops::FilterType::Lanczos3));
-    }
+    // Same reason as `collage`: decode + GIF encode is CPU work.
+    let hash = {
+        let pool = pool.clone();
+        let store = store.clone();
+        let uid = uid.clone();
+        let ids = ids.clone();
+        tokio::task::spawn_blocking(move || -> Result<String> {
+            let mut frames: Vec<image::DynamicImage> = Vec::new();
+            for pid in &ids {
+                let p = load_photo_bytes(&pool, &store, &uid, pid)?;
+                let img = image::load_from_memory(&p).map_err(|e| AppError::BadRequest(e.to_string()))?;
+                frames.push(img.resize(480, 480, image::imageops::FilterType::Lanczos3));
+            }
 
-    let mut buf = Vec::new();
-    {
-        use gif::{Encoder, Frame, Repeat};
-        let mut encoder = Encoder::new(&mut buf, 480, 480, &[]).map_err(|e| AppError::Internal(e.to_string()))?;
-        encoder.set_repeat(Repeat::Infinite).map_err(|e| AppError::Internal(e.to_string()))?;
-        for img in &frames {
-            let rgba = img.to_rgba8();
-            let mut frame = Frame::from_rgba_speed(480, 480, &mut rgba.into_raw(), 10);
-            frame.delay = 20;
-            encoder.write_frame(&frame).map_err(|e| AppError::Internal(e.to_string()))?;
-        }
-    }
-    let stored = store.put(&buf)?;
-    let hash = stored.hash.clone();
+            let mut buf = Vec::new();
+            {
+                use gif::{Encoder, Frame, Repeat};
+                let mut encoder = Encoder::new(&mut buf, 480, 480, &[]).map_err(|e| AppError::Internal(e.to_string()))?;
+                encoder.set_repeat(Repeat::Infinite).map_err(|e| AppError::Internal(e.to_string()))?;
+                for img in &frames {
+                    let rgba = img.to_rgba8();
+                    let mut frame = Frame::from_rgba_speed(480, 480, &mut rgba.into_raw(), 10);
+                    frame.delay = 20;
+                    encoder.write_frame(&frame).map_err(|e| AppError::Internal(e.to_string()))?;
+                }
+            }
+            let stored = store.put(&buf)?;
+            Ok(stored.hash.clone())
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))??
+    };
+
     let now = Utc::now().timestamp();
     let id = Uuid::new_v4().to_string();
     let source = ids.join(",");

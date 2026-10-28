@@ -28,6 +28,11 @@ pub struct Config {
     #[arg(long, env = "HEARTH_SYNC_ML_SERVICE_URL")]
     pub ml_service_url: Option<String>,
 
+    /// Comma-separated IP addresses of reverse proxies whose `X-Forwarded-For`
+    /// header may be trusted. Empty means trust no proxy.
+    #[arg(long, env = "HEARTH_SYNC_TRUSTED_PROXIES", default_value = "")]
+    pub trusted_proxies: String,
+
     #[arg(long, env = "HEARTH_SYNC_TLS_CERT")]
     pub tls_cert: Option<PathBuf>,
 

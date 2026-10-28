@@ -34,6 +34,24 @@ pub struct SearchResult {
     pub caption: String,
 }
 
+/// Turn arbitrary user text into a safe FTS5 query.
+///
+/// Raw input was passed straight to `MATCH`, so a single `"` produced a syntax
+/// error and a 500. Every term is quoted, quotes are escaped by doubling, and
+/// punctuation-only terms (which tokenize to nothing) are dropped.
+fn fts_query(input: &str) -> Option<String> {
+    let terms: Vec<String> = input
+        .split_whitespace()
+        .filter(|t| t.chars().any(|c| c.is_alphanumeric()))
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect();
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" "))
+    }
+}
+
 pub async fn search(State(state): State<AppState>, headers: axum::http::HeaderMap, Query(q): Query<SearchQuery>) -> Result<Json<Vec<SearchResult>>> {
     let uid = auth_user(&state, &headers)?;
     let pool = state.db.clone();
@@ -51,6 +69,10 @@ pub async fn search(State(state): State<AppState>, headers: axum::http::HeaderMa
             for r in rows { out.push(r?); }
             return Ok(out);
         }
+        let match_expr = match fts_query(&query) {
+            Some(m) => m,
+            None => return Ok(Vec::new()),
+        };
         // FTS search
         let mut stmt = c.prepare(
             "SELECT p.id,p.content_hash,p.width,p.height,p.taken_at,p.mime_type,p.is_favorite,p.is_archived,p.caption
@@ -58,7 +80,7 @@ pub async fn search(State(state): State<AppState>, headers: axum::http::HeaderMa
              WHERE p.user_id = ?1 AND p.is_trashed = 0 AND photos_fts MATCH ?2
              LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![uid, query, limit], row_to_result)?;
+        let rows = stmt.query_map(params![uid, match_expr, limit], row_to_result)?;
         let mut out = Vec::new();
         for r in rows { out.push(r?); }
         Ok(out)

@@ -29,7 +29,11 @@ pub async fn models(State(state): State<AppState>, headers: HeaderMap) -> Result
     let model_dir = state.config.data_dir.join("models");
     let clip = model_dir.join("clip_visual.onnx").exists();
     let face = model_dir.join("face_detection.onnx").exists();
-    let python = crate::ml::InferenceEngine::new(model_dir.clone()).is_available();
+    // Availability probing starts a python3 interpreter; never on the runtime.
+    let py_dir = model_dir.clone();
+    let python = tokio::task::spawn_blocking(move || crate::ml::InferenceEngine::new(py_dir).is_available())
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(serde_json::json!({
         "model_dir": model_dir.to_string_lossy(),
         "clip_visual": clip,
@@ -41,8 +45,10 @@ pub async fn models(State(state): State<AppState>, headers: HeaderMap) -> Result
 
 pub async fn status(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<MlStatus>> {
     let _ = auth_user(&state, &headers)?;
-    let engine = crate::ml::InferenceEngine::new(state.config.data_dir.join("models"));
-    let py = engine.is_available();
+    let model_dir = state.config.data_dir.join("models");
+    let py = tokio::task::spawn_blocking(move || crate::ml::InferenceEngine::new(model_dir).is_available())
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(MlStatus {
         enabled: py,
         features: if py { vec!["face-detection".into(), "clip-search".into(), "ocr".into()] } else { vec![] },
@@ -69,18 +75,25 @@ pub async fn smart_search(State(state): State<AppState>, headers: HeaderMap, Jso
             return Ok(Json(j));
         }
     }
-    let engine = crate::ml::InferenceEngine::new(state.config.data_dir.join("models"));
-    if !engine.is_available() {
-        return Err(AppError::BadRequest("ML not available: python3 with torch required".into()));
-    }
-    // Encode query text
-    let qemb = engine.encode_text(&req.query).map_err(AppError::Internal)?;
-    if qemb.is_empty() {
-        return Err(AppError::Internal("empty embedding returned".into()));
-    }
+    // Encode the query and score stored embeddings. `encode_text` shells out to
+    // python3 and `search_similar` decodes every stored vector: both are
+    // blocking, so they belong on the blocking pool.
+    let model_dir = state.config.data_dir.join("models");
+    let query_text = req.query.clone();
     let limit = req.limit.unwrap_or(50);
     let pool = state.db.clone();
-    let results = crate::ml::search_similar(&pool, &uid, &qemb, limit)?;
+    let uid2 = uid.clone();
+    let results = tokio::task::spawn_blocking(move || -> Result<Vec<(String, f32)>> {
+        let engine = crate::ml::InferenceEngine::new(model_dir);
+        if !engine.is_available() {
+            return Err(AppError::BadRequest("ML not available: python3 with torch required".into()));
+        }
+        let qemb = engine.encode_text(&query_text).map_err(AppError::Internal)?;
+        if qemb.is_empty() {
+            return Err(AppError::Internal("empty embedding returned".into()));
+        }
+        crate::ml::search_similar(&pool, &uid2, &qemb, limit)
+    }).await.map_err(|e| AppError::Internal(e.to_string()))??;
     // Fetch photo metadata for results
     let mut out = Vec::new();
     for (pid, sim) in results {
@@ -127,9 +140,30 @@ pub async fn people(State(state): State<AppState>, headers: HeaderMap) -> Result
 
 pub async fn reprocess(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<serde_json::Value>> {
     let uid = auth_user(&state, &headers)?;
-    // Enqueue a reprocess job (logged; actual processing requires ML worker)
-    tracing::info!("Reprocess requested for user {}", uid);
-    Ok(Json(json!({"queued": true, "note": "Reprocess job queued. ML worker will process when available."})))
+    let pool = state.db.clone();
+    let uid2 = uid.clone();
+    let ids = tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
+        let c = conn(&pool).map_err(AppError::Db)?;
+        let mut stmt = c.prepare("SELECT id FROM photos WHERE user_id = ?1 AND is_trashed = 0")?;
+        let rows = stmt.query_map(params![uid2], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows { out.push(r?); }
+        Ok(out)
+    }).await.map_err(|e| AppError::Internal(e.to_string()))??;
+
+    // This used to log a line and answer {"queued": true} without sending
+    // anything anywhere. Now every photo really is handed to the worker.
+    let mut queued = 0usize;
+    for photo_id in &ids {
+        if state.job_tx
+            .send(crate::ml::Job::ProcessPhoto { photo_id: photo_id.clone(), user_id: uid.clone() })
+            .await
+            .is_ok()
+        {
+            queued += 1;
+        }
+    }
+    Ok(Json(json!({"queued": queued, "total": ids.len()})))
 }
 
 // Face detection endpoint
@@ -156,16 +190,23 @@ pub async fn detect_faces(State(state): State<AppState>, headers: HeaderMap, Jso
     }).await.map_err(|e| AppError::Internal(e.to_string()))??;
     // Read photo bytes
     let data = store.get(&hash)?;
-    // Write to temp file for Python
+    // Staging the bytes and running the model both block: python3 is a
+    // subprocess and the decode/inference is CPU-bound.
+    let model_dir = state.config.data_dir.join("models");
     let tmp_path = format!("/tmp/face_detect_{}.jpg", photo_id);
-    std::fs::write(&tmp_path, &data)?;
-    let engine = crate::ml::InferenceEngine::new(state.config.data_dir.join("models"));
-    if !engine.is_available() {
+    let faces = tokio::task::spawn_blocking(move || -> Result<Vec<crate::ml::FaceDetection>> {
+        std::fs::write(&tmp_path, &data)?;
+        let engine = crate::ml::InferenceEngine::new(model_dir);
+        let out = if engine.is_available() {
+            engine.detect_faces(&tmp_path).map_err(AppError::Internal)
+        } else {
+            Err(AppError::BadRequest("ML not available".into()))
+        };
         let _ = std::fs::remove_file(&tmp_path);
-        return Err(AppError::BadRequest("ML not available".into()));
-    }
-    let faces = engine.detect_faces(&tmp_path).map_err(AppError::Internal)?;
-    let _ = std::fs::remove_file(&tmp_path);
+        out
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))??;
     // Store faces in DB
     let now = chrono::Utc::now().timestamp();
     for face in &faces {
@@ -238,20 +279,32 @@ pub async fn index_photo(State(state): State<AppState>, headers: HeaderMap, Json
         }
     }).await.map_err(|e| AppError::Internal(e.to_string()))??;
     let data = store.get(&hash)?;
+    let model_dir = state.config.data_dir.join("models");
     let tmp_path = format!("/tmp/index_{}.jpg", photo_id);
-    std::fs::write(&tmp_path, &data)?;
-    let engine = crate::ml::InferenceEngine::new(state.config.data_dir.join("models"));
-    if !engine.is_available() {
+    let emb = tokio::task::spawn_blocking(move || -> Result<Vec<f32>> {
+        std::fs::write(&tmp_path, &data)?;
+        let engine = crate::ml::InferenceEngine::new(model_dir);
+        let out = if engine.is_available() {
+            engine.encode_image(&tmp_path).map_err(AppError::Internal)
+        } else {
+            Err(AppError::BadRequest("ML not available".into()))
+        };
         let _ = std::fs::remove_file(&tmp_path);
-        return Err(AppError::BadRequest("ML not available".into()));
-    }
-    let emb = engine.encode_image(&tmp_path).map_err(AppError::Internal)?;
-    let _ = std::fs::remove_file(&tmp_path);
+        out
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))??;
     if emb.is_empty() {
         return Err(AppError::Internal("empty embedding".into()));
     }
-    crate::ml::store_embedding(&state.db, photo_id, &emb, "clip-vit-b32")?;
-    Ok(Json(json!({"photo_id": photo_id, "indexed": true, "embedding_dim": emb.len()})))
+    let emb_len = emb.len();
+    let pool = state.db.clone();
+    let pid = photo_id.to_string();
+    let emb2 = emb.clone();
+    tokio::task::spawn_blocking(move || crate::ml::store_embedding(&pool, &pid, &emb2, "clip-vit-b32"))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))??;
+    Ok(Json(json!({"photo_id": photo_id, "indexed": true, "embedding_dim": emb_len})))
 }
 
 #[derive(Deserialize)]
@@ -276,10 +329,15 @@ pub async fn ocr(State(state): State<AppState>, headers: HeaderMap, Json(req): J
     // Write bytes to temp file and run OCR via python helper.
     let data = store.get(&hash)?;
     let tmp = std::env::temp_dir().join(format!("ocr_{}.jpg", hash));
-    std::fs::write(&tmp, &data).map_err(|e| AppError::Internal(e.to_string()))?;
-    let engine = crate::ml::InferenceEngine::new(model_dir.clone());
-    let text = engine.ocr(&tmp.to_string_lossy()).map_err(AppError::Internal)?;
-    let _ = std::fs::remove_file(&tmp);
+    let text = tokio::task::spawn_blocking(move || -> Result<String> {
+        std::fs::write(&tmp, &data)?;
+        let engine = crate::ml::InferenceEngine::new(model_dir);
+        let out = engine.ocr(&tmp.to_string_lossy()).map_err(AppError::Internal);
+        let _ = std::fs::remove_file(&tmp);
+        out
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))??;
 
     // Store result
     let pool = state.db.clone();

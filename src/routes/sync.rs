@@ -41,6 +41,9 @@ pub struct ChangeItem {
     pub caption: String,
     pub updated_at: i64,
     pub deleted: bool,
+    /// Cursor value. Server-side only; the client never sees or sends this.
+    #[serde(skip)]
+    pub seq: i64,
 }
 
 #[derive(Serialize)]
@@ -54,22 +57,19 @@ pub async fn changes(State(state): State<AppState>, headers: axum::http::HeaderM
     let uid = auth_user(&state, &headers)?;
     let pool = state.db.clone();
     let since = q.since.unwrap_or(0);
-    let limit = q.limit.unwrap_or(200).min(1000);
-    let (changes, next) = tokio::task::spawn_blocking(move || -> Result<(Vec<ChangeItem>, i64)> {
+    let limit = q.limit.unwrap_or(200).clamp(1, 1000);
+    let (changes, next, has_more) = tokio::task::spawn_blocking(move || -> Result<(Vec<ChangeItem>, i64, bool)> {
         let c = conn(&pool).map_err(AppError::Db)?;
-        // tombstones since cursor
-        let mut stmt = c.prepare(
-            "SELECT id, entity_id, deleted_at FROM tombstones WHERE user_id = ?1 AND deleted_at > ?2 ORDER BY deleted_at ASC LIMIT ?3",
-        )?;
-        let mut tombstones: Vec<(String, String, i64)> = Vec::new();
-        let rows = stmt.query_map(params![uid, since, limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-        for r in rows { tombstones.push(r?); }
+        // +1 from each table so the merged result can be truncated on a real
+        // boundary instead of guessing from a per-table limit.
+        let fetch = limit + 1;
+        let mut all: Vec<ChangeItem> = Vec::new();
 
-        // photos updated since cursor
         let mut stmt = c.prepare(
-            "SELECT id,content_hash,width,height,taken_at,imported_at,size_bytes,mime_type,is_favorite,is_archived,is_trashed,caption,updated_at FROM photos WHERE user_id = ?1 AND updated_at > ?2 ORDER BY updated_at ASC LIMIT ?3",
+            "SELECT id,content_hash,width,height,taken_at,imported_at,size_bytes,mime_type,is_favorite,is_archived,is_trashed,caption,updated_at,sync_seq
+             FROM photos WHERE user_id = ?1 AND sync_seq > ?2 ORDER BY sync_seq ASC LIMIT ?3",
         )?;
-        let rows = stmt.query_map(params![uid, since, limit], |r| Ok(ChangeItem {
+        let rows = stmt.query_map(params![uid, since, fetch], |r| Ok(ChangeItem {
             id: r.get(0)?,
             content_hash: r.get(1)?,
             width: r.get(2)?,
@@ -84,37 +84,47 @@ pub async fn changes(State(state): State<AppState>, headers: axum::http::HeaderM
             caption: r.get(11)?,
             updated_at: r.get(12)?,
             deleted: false,
+            seq: r.get(13)?,
         }))?;
-        let mut changes: Vec<ChangeItem> = Vec::new();
-        for r in rows { changes.push(r?); }
+        for r in rows { all.push(r?); }
 
-        // append tombstones as deleted changes
-        for (_, eid, ts) in &tombstones {
-            changes.push(ChangeItem {
-                id: eid.clone(),
+        let mut stmt = c.prepare(
+            "SELECT entity_id, deleted_at, sync_seq FROM tombstones
+             WHERE user_id = ?1 AND sync_seq > ?2 ORDER BY sync_seq ASC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![uid, since, fetch], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+        })?;
+        for r in rows {
+            let (eid, ts, seq) = r?;
+            all.push(ChangeItem {
+                id: eid,
                 content_hash: String::new(),
                 width: 0,
                 height: 0,
                 taken_at: None,
-                imported_at: *ts,
+                imported_at: ts,
                 size_bytes: 0,
                 mime_type: String::new(),
                 is_favorite: false,
                 is_archived: false,
                 is_trashed: true,
                 caption: String::new(),
-                updated_at: *ts,
+                updated_at: ts,
                 deleted: true,
+                seq,
             });
         }
 
-        // compute next cursor = max updated_at seen
-        let mut maxts = since;
-        for ch in &changes { if ch.updated_at > maxts { maxts = ch.updated_at; } }
-        Ok((changes, maxts))
+        all.sort_by_key(|ch| ch.seq);
+        let has_more = all.len() as i64 > limit;
+        all.truncate(limit as usize);
+        // The cursor is the sequence of the last item actually returned, so a
+        // change can never be skipped between two pages.
+        let next = all.last().map(|ch| ch.seq).unwrap_or(since);
+        Ok((all, next, has_more))
     }).await.map_err(|e| AppError::Internal(e.to_string()))??;
 
-    let has_more = changes.len() as i64 >= limit;
     Ok(Json(ChangesResp { changes, next_cursor: next, has_more }))
 }
 
@@ -157,11 +167,17 @@ pub async fn push(State(state): State<AppState>, headers: axum::http::HeaderMap,
         let mut conflicts = Vec::new();
         for it in &req.items {
             if it.deleted == Some(true) {
-                // tombstone
-                let tid = Uuid::new_v4().to_string();
+                // One tombstone per entity. `id` is the primary key and was
+                // random, so repeated pushes of the same deletion piled up
+                // duplicate changes.
                 c.execute(
-                    "INSERT OR IGNORE INTO tombstones (id, user_id, entity_type, entity_id, deleted_at) VALUES (?1,?2,'photo',?3,?4)",
-                    params![tid, uid, it.id, it.updated_at.unwrap_or(now)],
+                    "DELETE FROM tombstones WHERE user_id = ?1 AND entity_id = ?2",
+                    params![uid, it.id],
+                )?;
+                let seq = crate::db::next_seq(&c, &uid).map_err(AppError::Db)?;
+                c.execute(
+                    "INSERT INTO tombstones (id, user_id, entity_type, entity_id, deleted_at, sync_seq) VALUES (?1,?2,'photo',?3,?4,?5)",
+                    params![Uuid::new_v4().to_string(), uid, it.id, it.updated_at.unwrap_or(now), seq],
                 )?;
                 // remove photo if present
                 c.execute("DELETE FROM photos WHERE id = ?1 AND user_id = ?2", params![it.id, uid])?;
@@ -185,14 +201,15 @@ pub async fn push(State(state): State<AppState>, headers: axum::http::HeaderMap,
                 it.id.clone()
             };
             let ua = it.updated_at.unwrap_or(now);
+            let seq = crate::db::next_seq(&c, &uid).map_err(AppError::Db)?;
             c.execute(
-                "INSERT INTO photos (id,user_id,content_hash,width,height,taken_at,imported_at,size_bytes,mime_type,is_favorite,is_archived,is_trashed,caption,camera_make,camera_model,updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'','',?14)
+                "INSERT INTO photos (id,user_id,content_hash,width,height,taken_at,imported_at,size_bytes,mime_type,is_favorite,is_archived,is_trashed,caption,camera_make,camera_model,updated_at,sync_seq)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'','',?14,?15)
                  ON CONFLICT(id) DO UPDATE SET
                    content_hash=excluded.content_hash, width=excluded.width, height=excluded.height,
                    taken_at=excluded.taken_at, size_bytes=excluded.size_bytes, mime_type=excluded.mime_type,
                    is_favorite=excluded.is_favorite, is_archived=excluded.is_archived, is_trashed=excluded.is_trashed,
-                   caption=excluded.caption, updated_at=excluded.updated_at",
+                   caption=excluded.caption, updated_at=excluded.updated_at, sync_seq=excluded.sync_seq",
                 params![
                     id, uid, it.content_hash,
                     it.width.unwrap_or(0), it.height.unwrap_or(0),
@@ -202,7 +219,8 @@ pub async fn push(State(state): State<AppState>, headers: axum::http::HeaderMap,
                     it.is_archived.unwrap_or(false) as i64,
                     it.is_trashed.unwrap_or(false) as i64,
                     it.caption.clone().unwrap_or_default(),
-                    ua
+                    ua,
+                    seq
                 ],
             )?;
             // FTS upsert

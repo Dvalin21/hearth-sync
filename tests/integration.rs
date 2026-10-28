@@ -17,6 +17,7 @@ fn make_state(tmp: &TempDir) -> AppState {
         tls_cert: None,
         tls_key: None,
         ml_service_url: None,
+        trusted_proxies: String::new(),
     };
     let db = db::init_pool(&config.db_path()).unwrap();
     let store = ObjectStore::new(config.objects_dir(), config.thumbs_dir()).unwrap();
@@ -37,7 +38,12 @@ async fn spawn_server(state: AppState) -> (String, tokio::task::JoinHandle<()>) 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
     (format!("http://{}", addr), handle)
 }

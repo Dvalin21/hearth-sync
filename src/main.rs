@@ -24,16 +24,15 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    // Load optional TOML config into env vars before parsing Config.
-    if let Some(path) = &cli.config {
-        let text = std::fs::read_to_string(path)?;
-        let table: toml::Table = text.parse()?;
-        for (k, v) in table {
-            let env_key = format!("HEARTH_SYNC_{}", k.to_uppercase());
-            std::env::set_var(env_key, v.to_string().trim_matches('"'));
-        }
+    // First pass: resolve only `--config`, because the file's values are
+    // exported as environment variables and clap reads those while binding
+    // Config. Reading the file *after* `Cli::parse()` was a no-op: every
+    // option already had its final value by then.
+    let first = Cli::parse();
+    if let Some(path) = &first.config {
+        load_toml_env(path)?;
     }
+    let cli = Cli::parse_from(std::env::args());
     let config = cli.config_opts;
 
     // Backup/restore are synchronous CLI ops; handle before server startup.
@@ -117,7 +116,33 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
+    // Connect info is what the rate limiter keys on. Without it every request
+    // would land in a single bucket.
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    Ok(())
+}
+
+/// Export a flat TOML file as `HEARTH_SYNC_*` environment variables.
+///
+/// Only flat tables of scalars map to env vars; nested tables have no sensible
+/// single-variable representation, so they are rejected instead of silently
+/// ignored.
+fn load_toml_env(path: &std::path::Path) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    let table: toml::Table = text.parse()?;
+    for (k, v) in table {
+        let env_key = format!("HEARTH_SYNC_{}", k.to_uppercase());
+        let value = match v {
+            toml::Value::String(s) => s,
+            toml::Value::Integer(i) => i.to_string(),
+            toml::Value::Float(f) => f.to_string(),
+            toml::Value::Boolean(b) => b.to_string(),
+            other => anyhow::bail!("config key '{}': unsupported value {}", k, other),
+        };
+        std::env::set_var(env_key, value);
+    }
     Ok(())
 }
 

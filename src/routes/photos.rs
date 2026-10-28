@@ -139,6 +139,7 @@ pub async fn upload(State(state): State<AppState>, headers: axum::http::HeaderMa
     let hash_for_db = hash.clone();
     let now = Utc::now().timestamp();
     let id = Uuid::new_v4().to_string();
+    let metrics = state.metrics.clone();
     let photo = tokio::task::spawn_blocking(move || -> Result<Photo> {
         let c = conn(&pool).map_err(AppError::Db)?;
         // dedup: if same hash already exists for this user, return existing
@@ -149,19 +150,24 @@ pub async fn upload(State(state): State<AppState>, headers: axum::http::HeaderMa
         ).ok();
         if let Some(eid) = existing {
             // backfill metadata the client sent, then return existing row
+            let seq = crate::db::next_seq(&c, &uid2).map_err(AppError::Db)?;
             c.execute(
-                "UPDATE photos SET taken_at=COALESCE(?1,taken_at), location_lat=COALESCE(?2,location_lat), location_lon=COALESCE(?3,location_lon), camera_make=CASE WHEN ?4='' THEN camera_make ELSE ?4 END, camera_model=CASE WHEN ?5='' THEN camera_model ELSE ?5 END WHERE id=?6",
-                params![taken_at, lat_opt, lon_opt, camera_make, camera_model, eid],
+                "UPDATE photos SET taken_at=COALESCE(?1,taken_at), location_lat=COALESCE(?2,location_lat), location_lon=COALESCE(?3,location_lon), camera_make=CASE WHEN ?4='' THEN camera_make ELSE ?4 END, camera_model=CASE WHEN ?5='' THEN camera_model ELSE ?5 END, sync_seq=?7 WHERE id=?6",
+                params![taken_at, lat_opt, lon_opt, camera_make, camera_model, eid, seq],
             )?;
             let p = load_photo(&c, &eid)?;
             return Ok(p);
         }
+        let seq = crate::db::next_seq(&c, &uid2).map_err(AppError::Db)?;
         c.execute(
-            "INSERT INTO photos (id,user_id,content_hash,width,height,taken_at,imported_at,size_bytes,mime_type,is_favorite,is_archived,is_trashed,caption,location_lat,location_lon,camera_make,camera_model,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,0,0,0,'',?10,?11,?12,?13,?14)",
-            params![id, uid2, hash_for_db, w, h, taken_at, now, data_for_db.len() as i64, mime2, lat_opt, lon_opt, camera_make, camera_model, now],
+            "INSERT INTO photos (id,user_id,content_hash,width,height,taken_at,imported_at,size_bytes,mime_type,is_favorite,is_archived,is_trashed,caption,location_lat,location_lon,camera_make,camera_model,updated_at,sync_seq) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,0,0,0,'',?10,?11,?12,?13,?14,?15)",
+            params![id, uid2, hash_for_db, w, h, taken_at, now, data_for_db.len() as i64, mime2, lat_opt, lon_opt, camera_make, camera_model, now, seq],
         )?;
         // FTS
         c.execute("INSERT INTO photos_fts (photo_id, caption, camera_make, camera_model) VALUES (?1,'','','')", params![id])?;
+        // Count real new photos only; a dedup hit returns the existing row and
+        // must not inflate the upload counter.
+        metrics.photos_uploaded.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         load_photo(&c, &id)
     }).await.map_err(|e| AppError::Internal(e.to_string()))??;
 
@@ -224,14 +230,24 @@ pub async fn delete(State(state): State<AppState>, headers: axum::http::HeaderMa
     let uid = auth_user(&state, &headers)?;
     let pool = state.db.clone();
     let store = state.store.clone();
+    let now = Utc::now().timestamp();
     tokio::task::spawn_blocking(move || -> Result<()> {
         let c = conn(&pool).map_err(AppError::Db)?;
         let p = load_photo(&c, &id)?;
         if p.user_id != uid { return Err(AppError::Forbidden); }
         // refcount
         let rc: i64 = c.query_row("SELECT COUNT(*) FROM photos WHERE content_hash = ?1", params![p.content_hash], |r| r.get(0))?;
+        let seq = crate::db::next_seq(&c, &uid).map_err(AppError::Db)?;
         c.execute("DELETE FROM photos WHERE id = ?1", params![id])?;
         c.execute("DELETE FROM album_photos WHERE photo_id = ?1", params![id])?;
+        c.execute("DELETE FROM photos_fts WHERE photo_id = ?1", params![id])?;
+        // A hard delete is a change too: without a tombstone, other devices keep
+        // showing the photo forever because /sync/changes has nothing to report.
+        c.execute("DELETE FROM tombstones WHERE user_id = ?1 AND entity_id = ?2", params![uid, id])?;
+        c.execute(
+            "INSERT INTO tombstones (id, user_id, entity_type, entity_id, deleted_at, sync_seq) VALUES (?1,?2,'photo',?3,?4,?5)",
+            params![uuid::Uuid::new_v4().to_string(), uid, id, now, seq],
+        )?;
         store.delete_if_unreferenced(&p.content_hash, rc - 1)?;
         Ok(())
     }).await.map_err(|e| AppError::Internal(e.to_string()))??;
@@ -319,9 +335,11 @@ pub async fn trash(State(state): State<AppState>, headers: axum::http::HeaderMap
         let p = load_photo(&c, &id)?;
         if p.user_id != uid { return Err(AppError::Forbidden); }
         if req.value {
-            c.execute("UPDATE photos SET is_trashed = 1, trashed_at = ?1, updated_at = ?1 WHERE id = ?2", params![now, id])?;
+            let seq = crate::db::next_seq(&c, &uid).map_err(AppError::Db)?;
+            c.execute("UPDATE photos SET is_trashed = 1, trashed_at = ?1, updated_at = ?1, sync_seq = ?3 WHERE id = ?2", params![now, id, seq])?;
         } else {
-            c.execute("UPDATE photos SET is_trashed = 0, trashed_at = NULL, updated_at = ?1 WHERE id = ?2", params![now, id])?;
+            let seq = crate::db::next_seq(&c, &uid).map_err(AppError::Db)?;
+            c.execute("UPDATE photos SET is_trashed = 0, trashed_at = NULL, updated_at = ?1, sync_seq = ?3 WHERE id = ?2", params![now, id, seq])?;
         }
         Ok(())
     }).await.map_err(|e| AppError::Internal(e.to_string()))??;
@@ -339,8 +357,9 @@ async fn set_flag(state: &AppState, headers: &axum::http::HeaderMap, id: &str, c
         let p = load_photo(&c, &id)?;
         if p.user_id != uid { return Err(AppError::Forbidden); }
         let v = if val { 1 } else { 0 };
-        let sql = format!("UPDATE photos SET {} = ?1, updated_at = ?2 WHERE id = ?3", col);
-        c.execute(&sql, params![v, now, id])?;
+        let seq = crate::db::next_seq(&c, &uid).map_err(AppError::Db)?;
+        let sql = format!("UPDATE photos SET {} = ?1, updated_at = ?2, sync_seq = ?4 WHERE id = ?3", col);
+        c.execute(&sql, params![v, now, id, seq])?;
         Ok(())
     }).await.map_err(|e| AppError::Internal(e.to_string()))??;
     Ok(StatusCode::NO_CONTENT)
